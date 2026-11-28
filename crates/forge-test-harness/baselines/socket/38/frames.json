@@ -12,6 +12,7 @@
     "FileContent": "file_content",
     "Greeting": "greeting",
     "Page": "page",
+    "Patch": "patch",
     "Pong": "pong",
     "Reply": "reply",
     "SeatFrames": "seat_frames",
@@ -897,6 +898,60 @@
         "type"
       ]
     },
+    "PatchHome": {
+      "": [
+        "data",
+        "kind",
+        "subject",
+        "version"
+      ],
+      "/data": [
+        "agents"
+      ],
+      "/data/agents[]": [
+        "id",
+        "op",
+        "record"
+      ],
+      "/data/agents[]/id": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/data/agents[]/record": [
+        "slot"
+      ],
+      "/data/agents[]/record/slot": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "PatchSession": {
+      "": [
+        "data",
+        "kind",
+        "subject"
+      ],
+      "/data": [
+        "reviews"
+      ],
+      "/data/reviews": [
+        "threads"
+      ],
+      "/data/reviews/threads": [
+        "outcome",
+        "value"
+      ],
+      "/subject": [
+        "session"
+      ],
+      "/subject/session": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "PluginsCliActionFailed": {
       "": [
         "kind",
@@ -1119,7 +1174,8 @@
       "": [
         "data",
         "kind",
-        "subject"
+        "subject",
+        "version"
       ],
       "/data": [
         "projects"
@@ -1146,7 +1202,8 @@
         "merged",
         "merged_items",
         "moved",
-        "moved_items"
+        "moved_items",
+        "refused"
       ],
       "/data/projects[]/attention/sample": [
         "rows",
@@ -1166,7 +1223,8 @@
       "": [
         "data",
         "kind",
-        "subject"
+        "subject",
+        "version"
       ],
       "/data": [
         "lsp",
@@ -1256,7 +1314,8 @@
       "": [
         "data",
         "kind",
-        "subject"
+        "subject",
+        "version"
       ],
       "/data": [
         "accounts",

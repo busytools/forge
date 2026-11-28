@@ -1,24 +1,25 @@
 /**
- * The home over a live connection: the snapshot it is answered with, the
- * read that follows an update the snapshot cannot carry, and the folds that
- * draw a field a frame carries exactly.
+ * The home over a live connection: the whole read it is answered with, the
+ * patches applied against it, and the folds that draw a field a frame
+ * carries exactly.
  *
  * **A row's state is the server's**, folded from the core's own `Live`
  * alongside the roster, so it arrives in the row already decided - including
  * the unseen marks. **A frame that carries a drawn field exactly is applied;
- * a frame whose value the drawn row cannot reproduce is answered with a
- * fresh read.** The failure direction is always the read rather than a wrong
- * value on screen: a frame this build cannot read, a seat the drawn home
- * does not hold, or a row in a state another source owns keeps the read it
- * always asked for. The residual reads are named in the issue the folds
- * landed under (#3063 rows 1-2).
+ * a frame whose value the drawn row cannot reproduce is answered by the
+ * patch the server derives from the same write, never by a fresh read.** A
+ * frame this build cannot read is reported with its payload rather than
+ * dropped (rule 25), and a field that moved with no patch behind it is the
+ * server's bug to fix, not a read for the page to buy. The residual folds
+ * are named in the issue they landed under (#3063 rows 1-2).
  *
  * `accounts_changed` was the first of these, and it is a replace rather than
  * a fold: the frame carries the whole pool field, so the client draws what
- * the server states without asking for an encode - **when the move is usage
- * only.** The loading state, the settled flag, the listener and a probe
- * failure all feed the project rows' `would_bind` and chip, so a change in
- * any of those still asks for the snapshot that refreshes them.
+ * the server states without asking for an encode: the frame carries the whole
+ * pool field and the patch behind it carries what the server derived from it,
+ * so a change in any of the pool's facts lands the same way. The one field a
+ * frame cannot settle is the row's own lifecycle, and the patch the server
+ * derives for the same write is what states it.
  *
  * **`prompt_lifecycle` is the one fold that counts.** The frame carries one
  * prompt's state, not the row's lifecycle, so the row is drawn from a
@@ -29,7 +30,6 @@
 import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { subjectKey } from '../protocol';
-import { ReadPace } from '../read-pace';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
@@ -47,29 +47,14 @@ import {
   biometricFrame,
   fatalErrorFrame,
   homeFrom,
-  poolFactsChanged,
   promptLifecycleFrame,
   tasksChanged,
   vaultLockFrame,
-  type AccountsWire,
   type HomeWire,
   type WireTime,
 } from '../wire/home';
 import type { PromptState } from '../wire/lifecycle';
 import type { SessionSlot } from '../wire/types';
-
-/**
- * How long an update waits before it is answered with a read.
- *
- * A burst becomes one read rather than one each: a turn settling emits
- * several at once, and a read answers with the fleet as it stands rather
- * than as it was at the first of them.
- *
- * Exported because `home/live.test.ts` drives this beat on fake timers: the
- * tests wait on the beat, so a longer one must lengthen the drive rather than
- * leave the tests asserting before it fires.
- */
-export const COALESCE_MS = 50;
 
 /** What the home has to draw from, and why it has nothing when it does not. */
 export interface HomeRead {
@@ -77,13 +62,28 @@ export interface HomeRead {
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
   /**
+   * The stream skipped a version, so one whole read is on its way.
+   *
+   * The record above is still drawn - a gap never blanks a page - and this is
+   * what says the figures may be a beat behind.
+   */
+  catchingUp?: boolean;
+  /**
+   * Patches the socket could not place, held for the page to say so.
+   *
+   * Rule 25: a frame this client cannot read is drawn as itself rather than
+   * dropped, and the page's own line is where it is drawn.
+   */
+  heldPatches?: unknown[];
+  /**
    * Why the snapshot could not be read, in this client's words, or `null`.
    *
    * **A malformed read is its own state, not an empty home**: the store is
    * already `ready` and its bound cleared before the page narrows it, so a
    * healthy-empty drawing would stand forever with nothing saying why. The
-   * page draws this instead. Nothing periodic retries it: the next update
-   * that covers the home, entering the page, or a reconnect, reads again.
+   * page draws this instead. Nothing periodic retries it: a reconnect reads
+   * again, and entering the page does not (a route entry asks no home read,
+   * #2955).
    */
   failed: string | null;
   /**
@@ -146,19 +146,11 @@ function malformedOf(data: unknown): string | null {
 }
 
 /**
- * Watch the home.
- *
- * The subscription, the message listener and the status listener are all let
- * go with the last subscriber, so a connection this page has replaced is not
- * left subscribed, listening, and asking the server for a full encode nobody
- * draws.
- */
-/**
  * The home's own reread for a connection, where a page is watching it.
  *
- * **A reader's ask goes through the page's guards**, not around them: a
- * return while a read is in flight would otherwise queue a second whole
- * encode behind the first.
+ * **A return's ask goes through the page's guards**, not around them: a read
+ * asked while one is in flight would queue a second whole encode behind the
+ * first.
  */
 const REREADS = new WeakMap<Connection, () => void>();
 
@@ -167,67 +159,32 @@ export function rereadHome(connection: Connection): void {
   REREADS.get(connection)?.();
 }
 
+/**
+ * Watch the home.
+ *
+ * The subscription, the message listener and the status listener are all let
+ * go with the last subscriber, so a connection this page has replaced is not
+ * left subscribed, listening, and asking the server for a full encode nobody
+ * draws.
+ */
 export function watchHome(connection: Connection): Readable<HomeRead> {
   let held: Store | null = null;
-  // A read is a full encode on the server, so asking again while one is in
-  // flight queues them behind each other and the page falls further behind
-  // the busier the fleet is. One at a time.
+  /** Whether a return's read is in flight, so a second one waits for it. */
   let reading = false;
-  /**
-   * Whether an update landed while a read was in flight.
-   *
-   * **The read in hand was encoded before it**, so its answer already
-   * disagrees with the fleet: skipping the update with it leaves the page
-   * drawing the state it asked about until something else moves - an ask mark
-   * outliving the answer that resolved it, which is the wait Ved met leaving
-   * needs-you (#1885). So the update is remembered, and asked for again the
-   * moment the answer lands.
-   */
-  let stale = false;
   /** The core's last service report, read off the update that carried it. */
   let report: ServiceReport | null = null;
-  /** The tasks each project last announced, so an unchanged set is no read. */
-  const lastTasks = new Map<string, string>();
   /**
-   * The newest pool a frame carried, kept across publishes.
-   *
-   * **A reused snapshot is not a newer pool.** A publish off the held
-   * snapshot - the empty/failed redraw, or a refusal - states a pool older
-   * than the fold, so the fold rides every publish until the snapshot it
-   * belongs to says otherwise.
+   * What the last draw was made from, so the store's own notifications -
+   * which fire for a pushed frame as much as for a new record - redraw only
+   * when the record or the store's state actually moved.
    */
-  let folded: AccountsWire | null = null;
-  /**
-   * Which read request the fold belongs to, or `null` when it is published.
-   *
-   * **A fold is newer than the read that was in flight when it arrived, and
-   * older than the next one.** Counting requests is what tells the two
-   * apart: the answer that lands compares its own number, so a fold from an
-   * earlier request cannot ride over a later, newer snapshot.
-   */
-  let foldRead: number | null = null;
-  /** Read requests made so far; the initial subscribe is 0. */
-  let reads = 0;
-  /** The pool the drawn view holds, which a fresh frame is compared against. */
-  let drawnPool: AccountsWire | null = null;
-  /**
-   * The beat every frame-driven read is asked on, floored so a fleet whose
-   * news never stops cannot buy a whole encode per frame (#3060).
-   */
-  const beat = new ReadPace(() => {
-    // **A read that started inside the beat is the one this update wanted.**
-    // A return's ask lands here too; queueing a second whole encode behind
-    // it would let the first answer clear the flag while the second is in
-    // flight, and a third could follow.
-    if (held === null || reading || held.state().kind === 'refused') return false;
-    reads += 1;
-    reading = true;
-    return connection.refresh('home');
-  }, COALESCE_MS);
+  let seenSnapshot: unknown = null;
+  let seenVersion: number | null = null;
+  let seenState: string | null = null;
+  let seenHeld = 0;
   /** The last home draw, so a frame's own facts can be applied into it. */
   let drawn: HomeWire | null = null;
-  /** A frame applied while the read in hand was being encoded (#3074). */
-  let appliedDuringRead = false;
+  let stopStore: (() => void) | null = null;
   /**
    * The prompts each seat is running or holding queued, by uuid.
    *
@@ -249,28 +206,35 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
-  /** Ask for one read, coalescing the updates that arrive inside the beat. */
-  function schedule(): void {
-    beat.schedule();
-  }
-
   /** Two slots are the same seat; the session id is the occupant, not the address. */
   function sameSeat(a: SessionSlot, b: SessionSlot): boolean {
     return a.org === b.org && a.project === b.project && a.label === b.label;
   }
 
-  /**
-   * Publish a fold, and drop any read whose answer it outran.
-   *
-   * **A read already in flight was encoded before this frame and will land
-   * after it**: the landing is dropped and the ask goes again rather than
-   * overwriting the frame's news (#3074 review).
-   */
+  /** Publish a fold the frame itself stated. */
   function publishFold(next: HomeWire): void {
     if (next === drawn) return;
     drawn = next;
-    view.set({ wire: drawn, refused: null, failed: null, report });
-    if (reading) appliedDuringRead = true;
+    publish({ wire: drawn, refused: null, failed: null });
+  }
+
+  /**
+   * Publish a draw, carrying whether the subject is catching up on a gap.
+   *
+   * **Every draw goes through here**, so the catching-up line can never be
+   * cleared by a fold while the read it names is still owed.
+   */
+  function publish(next: {
+    wire: HomeWire | null;
+    refused: string | null;
+    failed: string | null;
+  }): void {
+    view.set({
+      ...next,
+      report,
+      catchingUp: held?.state().kind === 'resyncing',
+      heldPatches: held?.unexpected() ?? [],
+    });
   }
 
   /**
@@ -352,22 +316,21 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   }
 
   /**
-   * Publish the held snapshot, with `pool` replacing its accounts when a
-   * frame carried one.
+   * Draw the store's record.
    *
-   * **One draw for both paths** - a snapshot's own field and a frame's
-   * payload - so every state (refused, empty, malformed, failed) words the
-   * same way whichever arrived.
+   * **The store is the page's whole source**: the socket applies every patch
+   * to it in place, so one draw reads whatever the record is now and every
+   * state (refused, empty, malformed, failed) words the same way. There is no
+   * ask here and nothing to race: a read is this function, not a round trip.
    */
-  function read(pool: AccountsWire | null = null): void {
+  function read(): void {
     if (held === null) return;
-    drawnPool = null;
     const state = held.state();
     if (state.kind === 'refused') {
       // Nothing to apply into: a frame must not paint the refused subject
       // back (#3074 review).
       drawn = null;
-      view.set({ wire: null, refused: state.why, failed: null, report });
+      publish({ wire: null, refused: state.why, failed: null });
       return;
     }
     const data = held.snapshot();
@@ -380,14 +343,14 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       const failed = state.kind === 'ready' ? 'the snapshot was empty' : null;
       drawn = null;
       livePrompts.clear();
-      view.set({ wire: null, refused: null, failed, report });
+      publish({ wire: null, refused: null, failed });
       return;
     }
     const malformed = malformedOf(data);
     if (malformed !== null) {
       drawn = null;
       livePrompts.clear();
-      view.set({ wire: null, refused: null, failed: malformed, report });
+      publish({ wire: null, refused: null, failed: malformed });
       return;
     }
     // The snapshot is JSON the server wrote from its own type, and `homeFrom`
@@ -395,8 +358,6 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // covers the collections; the catch covers an element shape neither saw.
     try {
       const wire = homeFrom(data as unknown as HomeWire);
-      if (pool !== null) wire.accounts = pool;
-      drawnPool = wire.accounts;
       drawn = wire;
       // **Every answer re-bases the set to what the server vouches for.** A
       // seat it says is idle has nothing in flight, so its set goes; a seat
@@ -411,30 +372,16 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       for (const agent of wire.agents) {
         if (agent.lifecycle === 'Idle') livePrompts.delete(subjectKey({ session: agent.slot }));
       }
-      view.set({ wire, refused: null, failed: null, report });
+      publish({ wire, refused: null, failed: null });
     } catch (why) {
       drawn = null;
       livePrompts.clear();
-      view.set({
+      publish({
         wire: null,
         refused: null,
         failed: `the snapshot could not be read: ${why instanceof Error ? why.message : String(why)}`,
-        report,
       });
     }
-  }
-
-  /**
-   * One read through this page's guards: nothing while one is in flight, and
-   * nothing from a refused subject. A return asks here directly rather than
-   * through the beat, and its ask starts the floor so the beat cannot buy a
-   * second whole encode right behind it.
-   */
-  function reread(): void {
-    if (held === null || reading || held.state().kind === 'refused') return;
-    reads += 1;
-    reading = true;
-    if (connection.refresh('home')) beat.went();
   }
 
   function watch(): void {
@@ -453,67 +400,53 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // hand-off may raise, and what makes an unshown seat wear its glyph is the
     // ask itself, read in the client's own `stateOf`.
     held = connection.subscribe('home', { answering: true });
-    reading = false;
-    // **Registered with the watch, not the store**, so a re-watch after the
-    // last reader left registers it again.
-    REREADS.set(connection, reread);
+    // **A return's read goes through these guards.** One at a time: a second
+    // ask while the first is in flight would queue a whole encode behind one
+    // already on its way, and the answer lands through the store subscription
+    // below, which is what clears the guard.
+    REREADS.set(connection, () => {
+      if (reading || held?.state().kind === 'refused') return;
+      reading = true;
+      if (!connection.refresh('home')) reading = false;
+    });
+    // **The record is redrawn from the store, not asked for.** Every whole
+    // read and every patch lands in the store by the socket's own apply path,
+    // so this redraws when the record - or the store's own state, a refusal
+    // included - actually moved. A pushed frame leaves the record as it was
+    // and is applied by the folds below without a redraw.
+    stopStore = held.value.subscribe(() => {
+      if (held === null) return;
+      // **Any store write answers a return's ask, even an unchanged record.**
+      // The write fires whether the read found anything moved or not, so the
+      // guard releases here rather than on a version change - a return that
+      // found nothing must not latch the guard against every later return.
+      reading = false;
+      const snapshot = held.snapshot();
+      const version = held.version();
+      const state = held.state().kind;
+      // **A held patch redraws too**: the list is how the page says a frame
+      // it could not place was kept rather than dropped (rule 25).
+      const heldPatches = held.unexpected().length;
+      if (
+        snapshot === seenSnapshot &&
+        version === seenVersion &&
+        state === seenState &&
+        heldPatches === seenHeld
+      ) {
+        return;
+      }
+      seenSnapshot = snapshot;
+      seenVersion = version;
+      seenState = state;
+      seenHeld = heldPatches;
+      read();
+    });
     stopMessages = connection.onMessage((message) => {
-      if (message.kind === 'error') {
-        // **An error is the home's answer only when it names the home or the
-        // store says the subscribe was refused.** Every other error - a
-        // dispatch, a read of a file - settles something else and leaves the
-        // home's read owed, so it must not redraw the held snapshot over a
-        // fold or free the next fold to ride that answer.
-        const named = message.subject !== undefined && subjectKey(message.subject) === 'home';
-        if (named || held?.state().kind === 'refused') {
-          reading = false;
-          read(folded);
-          // **The staleness stays.** A refused subject can take no read at
-          // all - both `schedule` and `reread` refuse one - so the update that
-          // landed while this read was in flight is not spent here: it is
-          // spent by the snapshot that re-establishes the subject, through the
-          // snapshot arm below. Clearing it here dropped that update for good
-          // (#2559), and the transport refuses the store before this listener
-          // ever sees the frame, so a re-ask from this arm could never fire.
-        }
-        return;
-      }
-      if (message.kind === 'snapshot') {
-        // A refusal this side attributed to another subject says nothing
-        // about the home's read.
-        if (message.subject !== 'home') return;
-        reading = false;
-        if (appliedDuringRead) {
-          // **The answer was encoded before the frame already drawn**: it
-          // must not overwrite that frame's news. The ask goes again, and the
-          // next answer is the one newer than the frame.
-          appliedDuringRead = false;
-          stale = false;
-          schedule();
-          return;
-        }
-        // The answer states the pool itself. A fold that arrived while THIS
-        // read was in flight is newer than it and stays; a fold from an
-        // earlier request is older and goes.
-        if (foldRead !== reads) folded = null;
-        foldRead = null;
-        read(folded);
-        // The answer just landed was encoded before whatever arrived while
-        // it was in flight, so that update is spent here rather than lost.
-        if (stale) {
-          stale = false;
-          schedule();
-        }
-        return;
-      }
       if (message.kind !== 'update' || !coversHome(message.update)) return;
       // **A refused subject draws its refusal, and the news is not lost**:
-      // nothing may paint over the refusal, but the update is spent by the
-      // snapshot that re-establishes the subject (#2559, #3074 review).
-      if (held?.state().kind === 'refused') {
-        stale = true;
-        return;
-      }
+      // nothing may paint over the refusal, while the whole read that
+      // re-establishes the subject spends what arrived here (#2559).
+      if (held?.state().kind === 'refused') return;
       // **A frame that carries a drawn field exactly is applied, not answered
       // with a read.** Each fold refuses a frame this build cannot read, and
       // the read is then the failure direction.
@@ -554,40 +487,19 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       if (life !== null && foldLifecycle(life.slot, life.uuid, life.state)) return;
       const work = backgroundWorkFrame(message.update);
       if (work !== null && foldBackground(work.slot, work.has)) return;
-      // **The pool's frame carries the pool.** It is the whole field the read
-      // would answer with, so folding it spends no encode; a frame from an
-      // older server carries none, and falls through to the read it always
-      // asked for.
+      // **The pool's frame carries the pool**, so it is folded into the draw
+      // where one is held; a page with no record yet draws it from the read
+      // that is already on its way.
       const pool = accountsPayload(message.update);
-      if (pool !== null) {
-        // **Usage-only moves fold; anything a project row or the card is read
-        // from keeps the read.** `would_bind` and the row's chip come off the
-        // pool's loading state, its probe failures and its selection signal
-        // (`at_cap`/`cooling`), so a bail, a heal, a settle or a cap has to
-        // come back with a snapshot.
-        if (drawnPool !== null && poolFactsChanged(drawnPool, pool)) {
-          // The read this asks for is the newer answer; a fold from an
-          // earlier request must not ride over it.
-          folded = null;
-          foldRead = null;
-        } else {
-          folded = pool;
-          if (reading || held?.snapshot() === null) foldRead = reads;
-          else read(pool);
-          return;
-        }
+      if (pool !== null && drawn !== null) {
+        publishFold({ ...drawn, accounts: pool });
+        return;
       }
       const tasks = tasksChanged(message.update);
       if (tasks !== null) {
-        // An unchanged set is no news: the chase used to re-announce every
-        // project every 30 s, and a full home read for that was the loop
-        // #2540 removed.
-        if (lastTasks.get(tasks.project) === tasks.digest) return;
-        lastTasks.set(tasks.project, tasks.digest);
         // **The frame carries the whole set**, so the fleet row's own counts
         // (the ready queue, the waits on the person, the row count) are
-        // applied into the draw instead of answered with a read (rule 32;
-        // #3063).
+        // applied into the draw (rule 32; #3063).
         const frame = tasksFrame(message.update);
         const applied =
           frame === null || drawn === null
@@ -595,33 +507,18 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
             : applyFleetCounts(drawn, tasks.project, frame.tasks);
         if (applied !== null) {
           drawn = applied;
-          view.set({ wire: drawn, refused: null, failed: null, report });
-          // **A read already in flight was encoded before this frame and will
-          // land after it**: the landing is dropped and the ask goes again
-          // rather than overwriting the frame's news (#3074 review).
-          if (reading) appliedDuringRead = true;
-          return;
+          publish({ wire: drawn, refused: null, failed: null });
         }
       }
-      if (reading) {
-        stale = true;
-        return;
-      }
-      schedule();
+      // **A frame this page cannot fold is not lost**: it marked the home
+      // dirty on the server, and the patch that answers it redraws the store
+      // within the coalescing window. There is no read to ask for.
     });
-    // A drop takes any read in flight with it, and the reconnect answers with
-    // a snapshot of its own - so the pacing must not stay stuck waiting for
-    // an answer that died, and the staleness dies with it.
+    // A drop leaves the store's record in place - the page keeps drawing what
+    // it last read while the reconnect re-subscribes; the answer re-seeds the
+    // store and the subscription above redraws it.
     stopStatus = connection.onStatus((next: ConnectionStatus) => {
       if (next !== 'open') {
-        reading = false;
-        stale = false;
-        // No read is owed across the drop, so the reconnect's snapshot is
-        // fresh and replaces the fold; the page keeps drawing the fold until
-        // it lands. **The in-flight answer died with the socket**, so a fold
-        // that landed while it was out no longer outruns the next one.
-        foldRead = null;
-        appliedDuringRead = false;
         drawn = null;
         livePrompts.clear();
       }
@@ -631,12 +528,14 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   function unwatch(): void {
     stopMessages?.();
     stopStatus?.();
+    stopStore?.();
     stopMessages = null;
     stopStatus = null;
-    beat.stop();
+    stopStore = null;
     // The subscription goes with the last subscriber too, or a connection
     // nothing draws from stays counted against a seat it is not showing.
     connection.unsubscribe('home');
+    REREADS.delete(connection);
     held = null;
     livePrompts.clear();
   }

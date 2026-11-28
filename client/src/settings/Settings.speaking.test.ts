@@ -50,10 +50,27 @@ function connection(
     },
     subscribe: () => ({
       subject: 'dictate_models',
+      // The page reads the store's value subscription; a double states the
+      // same answer once and never changes, which is all this card needs.
+      value: {
+        subscribe: (fn: (value: unknown) => void) => {
+          fn({
+            snapshot: wire,
+            updates: [],
+            state: { kind: 'ready' },
+            dropped: 0,
+            version: 1,
+            unexpected: [],
+          });
+          return () => {};
+        },
+      },
       state: () => ({ kind: 'ready' }),
       snapshot: () => wire,
-      updates: [],
-      dropped: 0,
+      version: () => 1,
+      updates: () => [],
+      dropped: () => 0,
+      unexpected: () => [],
     }),
     // The settings page pumps the last seat's voice while it is open; this
     // page's fake holds no seat store.

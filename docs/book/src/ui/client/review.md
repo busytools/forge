@@ -258,9 +258,9 @@ is only reached by a reopen or by a thread's code returning - both the
 reader handing the work back - and an author this build cannot name is drawn
 without being counted, so the tally agrees with every other surface's.
 
-A worker's answer reaches this page through the record: the reviews ride the
-snapshot, so a re-read is what carries it, and nothing pushes a review
-change. The terminal's activity line - the `worker addressed review #N` row
+A worker's answer reaches this page as a patch: the reviews ride the seat's
+record, and every move in them is pushed as a patch of the record's review
+fields, applied in place. The terminal's activity line - the `worker addressed review #N` row
 it drops into the chat - is that view's own and is not drawn here; the frame
 also carries nothing this page could not read from the record itself.
 
@@ -335,9 +335,12 @@ serialization is the digits, and the deserializer accepts a number too,
 which is what blobs written before this held. A thread read back is echoed
 verbatim on a reply, so a round-trip cannot round the hash off.
 
-Every write re-reads the record when it lands, because nothing pushes a
-review change: the drawn round, the drawn thread and the header are always
-the store's own answer rather than the page's guess at what the write did.
+A worker's answer lands as a pushed patch, and the drawn round, the drawn
+thread and the header are always the store's own answer - its first read and
+the patches applied to it - rather than the page's guess at what the write
+did. **This page's own writes still re-read**: a review command writes the
+store and nothing announces it on the wire, so the page asks for the record
+once its write returns.
 
 **Every box on the page dictates, the way the composer's box does.** The
 comment box, the reply box in either half and the round's summary field each

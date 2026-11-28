@@ -174,6 +174,19 @@
   <main class="wrap extensions-page"><p class="pending">Reading the extensions...</p></main>
 {:else}
   <main class="wrap extensions-page">
+    {#if page.resyncing}
+      <!-- The stream skipped a version: the record stays drawn and this says
+           it may be a beat behind while one whole read lands. -->
+      <p class="pending">Catching up with the server...</p>
+    {/if}
+    {#if (page.heldPatches ?? []).length > 0}
+      <!-- Rule 25: a frame this client cannot read is kept and said. -->
+      <p class="pending">
+        {page.heldPatches?.length} server update{(page.heldPatches?.length ?? 0) === 1 ? '' : 's'} for
+        the extensions could not be read and
+        {(page.heldPatches?.length ?? 0) === 1 ? 'was' : 'were'} kept
+      </p>
+    {/if}
     <ExtensionsBody
       wire={page.read}
       {refusal}

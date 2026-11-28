@@ -1,20 +1,22 @@
 /**
- * The board over a live connection: the snapshot it is answered with, and the
- * read that follows every update a board subscriber is sent (#2517).
+ * The board over a live connection: the whole record its subscribe answer
+ * carries, and every patch the socket applies into it after that.
  *
  * **One store per connection, shared by the pages that draw it.** The board
  * page and the session rail both read it, and a second subscription would
  * make the server encode the same rows twice. The subscription opens with the
  * first reader and goes with the last, so a home page that draws no board
  * pays nothing for it.
+ *
+ * **The page has no beat.** What the server computes at read time and the
+ * clock moves - worked time, ages, the overdue/no-movement/waiting marks - is
+ * re-derived at draw time from the row's own timestamps (`board/clock.ts`),
+ * so a watched board advances without a read and nothing is sent for a
+ * subject that did not change.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
-import { observeAttention, pageWatched } from '../attention';
-import { observeForeground } from '../foreground';
-import { subjectKey } from '../protocol';
-import { ReadPace } from '../read-pace';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import {
@@ -34,42 +36,6 @@ import {
 } from '../wire/board';
 import { tasksChanged } from '../wire/home';
 
-/**
- * How long an update waits before it is answered with a read.
- *
- * Exported because `board/live.test.ts` drives this beat on fake timers: the
- * tests wait on the beat, so a longer one must lengthen the drive rather than
- * leave the tests asserting before it fires.
- */
-export const COALESCE_MS = 50;
-
-/**
- * How often a watched board re-reads while nothing writes.
- *
- * **The beat exists for what the server computes at read time.** The `stale`
- * mark's no-movement window and the `overdue` mark (the row's own estimate,
- * or a wait past the band) cross with time and no frame announces it.
- * The card's worked figure and the waiting card's age are read values too, so
- * they are refreshed at most five minutes after the page is watched again and
- * can be up to the time it was away plus five minutes old - an accepted
- * staleness, because these windows are hours or an estimate (#2517). Only the
- * `wrote ... ago` line ticks off the page's own clock and needs no read.
- *
- * **And it runs only while the page is being watched.** The whole snapshot is
- * one of the client's largest reads, and a locked screen or a display going
- * off leaves nobody to read the answer; losing attention releases the beat,
- * and gaining it starts it again - from focus or visibility on the desktop and
- * the web, and from the shell's `client://foreground` resume on Android, which
- * reports neither on return.
- *
- * **Gaining attention does not read.** The return's read already exists:
- * `connect/resync.ts` asks the board through this store's own guards after a
- * hide of at least `RETURN_HIDE_MS`, and reads nothing on a bare focus change
- * on purpose. A read here would buy one on every alt-tab, and a second on
- * every return from hidden.
- */
-const MARK_BEAT_MS = 5 * 60_000;
-
 const NOTHING: BoardRead = { wire: null, refused: null };
 
 const STORES = new WeakMap<Connection, Readable<BoardRead>>();
@@ -77,9 +43,9 @@ const STORES = new WeakMap<Connection, Readable<BoardRead>>();
 /**
  * The board's own reread for a connection, where a page is watching it.
  *
- * **A reader's ask goes through the page's guards**, not around them: a
- * return while a read is in flight would otherwise queue a second whole
- * encode behind the first.
+ * **A return's ask goes through the page's guards**, not around them: a read
+ * asked while one is in flight would queue a second whole encode behind the
+ * first.
  */
 const REREADS = new WeakMap<Connection, () => void>();
 
@@ -99,40 +65,37 @@ export function watchBoard(connection: Connection): Readable<BoardRead> {
 
 function boardStore(connection: Connection): Readable<BoardRead> {
   let held: Store | null = null;
-  // One read at a time: it is a whole encode on the server, and a read asked
-  // while one is in flight queues behind it.
+  /** Whether a return's read is in flight, so a second one waits for it. */
   let reading = false;
-  /** Whether an update landed while a read was in flight. */
-  let stale = false;
-  /**
-   * The pace every frame-driven read is asked at, floored so a fleet whose
-   * news never stops cannot buy a whole encode per frame (#3060).
-   */
-  const pace = new ReadPace(() => {
-    // A read already in flight is the ask this update would have made:
-    // asking again would queue a second whole encode behind it.
-    // **A refused subject is not asked again either** - the refusal is the
-    // answer, and an update would knock on a door already shut.
-    if (reading || held?.state().kind === 'refused') return false;
-    reading = true;
-    return connection.refresh('board');
-  }, COALESCE_MS);
-  let beat: ReturnType<typeof setInterval> | null = null;
-  let stopAttention: (() => void) | null = null;
-  let stopForeground: (() => void) | null = null;
-  /** The tasks each project last announced, so an unchanged set is no read. */
+  /** The tasks each project last announced, so an unchanged set is no redraw. */
   const lastTasks = new Map<string, string>();
   /** The last board draw, so a frame's own facts can be applied into it. */
   let drawn: BoardWire | null = null;
-  /** A frame applied while the read in hand was being encoded (#3074). */
-  let appliedDuringRead = false;
+  /**
+   * What the last draw was made from, so the store's own notifications -
+   * which fire for a pushed frame as much as for a new record - redraw only
+   * when the record or the store's state actually moved.
+   */
+  let seenSnapshot: unknown = null;
+  let seenVersion: number | null = null;
+  let seenState: string | null = null;
+  let seenHeld = 0;
+  let stopStore: (() => void) | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
+  /** The instant the drawn record was received; the clock's own base. */
+  let readAt = 0;
+  /** The record those values were last taken from. */
+  let drawnSnapshot: unknown = null;
+  let drawnVersion: number | null = null;
 
-  function schedule(): void {
-    pace.schedule();
-  }
-
+  /**
+   * Draw the store's record.
+   *
+   * **The store is the page's whole source**: the socket applies every patch
+   * to it in place, so this reads whatever the record is now, with no ask and
+   * nothing to race.
+   */
   function read(): void {
     if (held === null) return;
     const state = held.state();
@@ -140,227 +103,181 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       // Nothing to apply into: a frame that landed before the refusal must
       // not paint the refused subject back (#3074 review).
       drawn = null;
-      view.set({ wire: null, refused: state.why });
+      view.set({
+        wire: null,
+        refused: state.why,
+        readAt,
+        resyncing: false,
+        heldPatches: held.unexpected(),
+      });
       return;
     }
     const data = held.snapshot();
-    // A whole read never carries the drawer's own rows; they survive it.
-    drawn = data === null ? null : carryDetail(drawn, boardFrom(data as unknown as BoardWire));
-    view.set({ wire: drawn, refused: null });
+    const version = held.version();
+    // **The clock is the record's, not the store state's.** A version gap
+    // moves the state without a new record, and stamping the receive time
+    // there would undercount a running row's worked time by the gap.
+    if (data !== drawnSnapshot || version !== drawnVersion) {
+      drawnSnapshot = data;
+      drawnVersion = version;
+      readAt = Date.now();
+    }
+    const record = data === null ? null : boardFrom(data as unknown as BoardWire);
+    // **A whole read never carries the drawer's own rows; they survive it.**
+    // The record replaces the lanes, and a row the drawer asked whole keeps
+    // its brief and history across the read.
+    drawn = record === null ? null : carryDetail(drawn, record);
+    view.set({
+      wire: drawn,
+      refused: null,
+      // **A malformed record is a failure, not an empty board**: `null` from
+      // the narrowing is this client's own state, and the page draws it.
+      failed: data !== null && record === null ? 'the board record could not be read' : null,
+      readAt,
+      resyncing: state.kind === 'resyncing',
+      heldPatches: held.unexpected(),
+    });
   }
 
   /**
-   * One read through this page's guards: nothing while one is in flight, and
-   * nothing from a refused subject. The marks' beat and a return ask here
-   * directly rather than through the pace, and the ask starts the floor so
-   * the pace cannot buy a second whole encode right behind it.
-   */
-  function reread(): void {
-    if (held === null || reading || held.state().kind === 'refused') return;
-    reading = true;
-    if (connection.refresh('board')) pace.went();
-  }
-
-  /**
-   * Start the marks' beat, if it is not already running.
+   * The view a frame's fold is written with.
    *
-   * **A report can land after the last reader left** - the shell's resume is
-   * a promise, and its disconnect may not have completed - so nothing is
-   * armed for a store nobody holds: an interval left behind would be a timer
-   * nothing ever clears.
+   * **A frame carries one project's facts and the board's clock stays where
+   * the last whole read put it.** The derived figures a fold leaves in place
+   * were computed at that read, so re-stamping the clock here would
+   * re-anchor every other project's worked time to this frame. The held
+   * patches and the catching-up state ride every write for the same reason
+   * the wire does: `view.set` replaces the value whole, and a fold that names
+   * only the wire drops both from the page.
    */
-  function beatOn(): void {
-    if (beat !== null || held === null) return;
-    beat = setInterval(reread, MARK_BEAT_MS);
-  }
-
-  /** Release the beat: a page nobody watches has no marks to advance. */
-  function beatOff(): void {
-    if (beat === null) return;
-    clearInterval(beat);
-    beat = null;
-  }
-
-  /**
-   * The page's attention moved.
-   *
-   * **A return restarts the beat and reads nothing of its own.** The return's
-   * read already exists in `connect/resync.ts`, which asks this store through
-   * its own guards after a hide of at least `RETURN_HIDE_MS` and deliberately
-   * reads nothing on a bare focus change; a read here would buy one on every
-   * alt-tab, and a second on every return from hidden.
-   *
-   * Both calls are idempotent, so a report that changes nothing - a restored
-   * page, a repeated focus - costs nothing.
-   */
-  function attention(next: boolean): void {
-    if (next) beatOn();
-    else beatOff();
+  function folded(): BoardRead {
+    return {
+      wire: drawn,
+      refused: null,
+      failed: null,
+      readAt,
+      resyncing: held?.state().kind === 'resyncing',
+      heldPatches: held?.unexpected() ?? [],
+    };
   }
 
   function watch(): void {
     held = connection.subscribe('board');
-    reading = false;
-    // **Registered with the watch, not the store**, so a re-watch after the
-    // last reader left registers it again.
-    REREADS.set(connection, reread);
-    stopMessages = connection.onMessage((message) => {
-      if (message.kind === 'snapshot' || message.kind === 'error') {
-        // A refusal this side attributed to another subject says nothing about
-        // the board's read; one off the wire names no subject and is read
-        // against the board's own store.
-        if (
-          message.kind === 'error' &&
-          message.subject !== undefined &&
-          subjectKey(message.subject) !== 'board'
-        ) {
-          return;
-        }
-        if (message.kind === 'error' || message.subject === 'board') {
-          reading = false;
-          if (appliedDuringRead) {
-            // **The answer was encoded before the frame already drawn**: it
-            // must not overwrite that frame's news. The ask goes again, and
-            // the next answer is the one newer than the frame.
-            appliedDuringRead = false;
-            stale = false;
-            schedule();
-            return;
-          }
-          read();
-          if (stale) {
-            stale = false;
-            schedule();
-          }
-        }
+    // **A return's read goes through these guards.** One at a time: a second
+    // ask while the first is in flight would queue a whole encode behind one
+    // already on its way, and the answer lands through the store subscription
+    // below, which is what clears the guard.
+    REREADS.set(connection, () => {
+      if (reading || held?.state().kind === 'refused') return;
+      reading = true;
+      if (!connection.refresh('board')) reading = false;
+    });
+    stopStore = held.value.subscribe(() => {
+      if (held === null) return;
+      // **Any store write answers a return's ask, even an unchanged record.**
+      // The write fires whether the read found anything moved or not, so the
+      // guard releases here rather than on a version change - a return that
+      // found nothing must not latch the guard against every later return.
+      reading = false;
+      const snapshot = held.snapshot();
+      const version = held.version();
+      const state = held.state().kind;
+      // **A held patch redraws too**: the list is how the page says a frame
+      // it could not place was kept rather than dropped (rule 25).
+      const heldPatches = held.unexpected().length;
+      if (
+        snapshot === seenSnapshot &&
+        version === seenVersion &&
+        state === seenState &&
+        heldPatches === seenHeld
+      ) {
         return;
       }
+      seenSnapshot = snapshot;
+      seenVersion = version;
+      seenState = state;
+      seenHeld = heldPatches;
+      read();
+    });
+    stopMessages = connection.onMessage((message) => {
       if (message.kind !== 'update' || !coversBoard(message.update)) return;
       // **A refused subject draws its refusal, and the news is not lost**:
-      // nothing may paint over the refusal, but the update is spent by the
-      // snapshot that re-establishes the subject (#3074 review).
-      if (held?.state().kind === 'refused') {
-        stale = true;
-        return;
-      }
+      // nothing may paint over the refusal, while the whole read that
+      // re-establishes the subject spends what arrived here (#3074 review).
+      if (held?.state().kind === 'refused') return;
       const tasks = tasksChanged(message.update);
       if (tasks !== null) {
         // An unchanged set is no news: the chase used to re-announce every
-        // project every 30 s, and a full board read for that was the loop
-        // #2540 removed.
+        // project every 30 s.
         if (lastTasks.get(tasks.project) === tasks.digest) return;
         lastTasks.set(tasks.project, tasks.digest);
         // **The frame carries the project's whole set**, so a task write is
-        // applied into the drawn board - the read it replaces was 3 MB and ran
-        // at 0.39/s while a seat was on screen (#3063, rule 32).
+        // applied into the drawn board at once; the patch that follows it
+        // carries the server's own derivation (#3063, rule 32).
         const frame = tasksFrame(message.update);
-        const applied = frame === null ? null : applyTasks(drawn, frame.project, frame.tasks);
-        if (applied !== null) {
-          drawn = applied;
-          view.set({ wire: drawn, refused: null });
-          // **A read already in flight was encoded before this frame and will
-          // land after it**: the landing is dropped and the ask goes again
-          // rather than overwriting the frame's news.
-          if (reading) appliedDuringRead = true;
-          return;
-        }
-      } else if (Object.keys(message.update).includes('task_detail')) {
-        // **A drawer's own ask, applied where it lands.** The frame carries
-        // one row whole - its brief and its history - so the drawer opens
-        // from the frame rather than a whole board read: a pending row is
-        // amended, and one the bulk board already dropped is left to the
-        // drawer that asked.
-        const detail = taskDetailFrame(message.update);
         const applied =
-          detail === null ? null : applyDetail(drawn, detail.project, detail.row ?? null);
+          frame === null ? null : applyTasks(drawn, frame.project, frame.tasks, Date.now());
         if (applied !== null) {
           drawn = applied;
-          view.set({ wire: drawn, refused: null });
-          if (reading) appliedDuringRead = true;
+          view.set(folded());
         }
         return;
-      } else {
-        const crons = cronsFrame(message.update);
-        if (crons !== null) {
-          const applied = applyCrons(drawn, crons.project, crons.crons);
-          if (applied !== null) {
-            drawn = applied;
-            view.set({ wire: drawn, refused: null });
-            if (reading) appliedDuringRead = true;
-            return;
-          }
-        } else if (Object.keys(message.update).includes('connector_subscriptions_changed')) {
-          // **The frame carries both sets whole**, so a project the drawn
-          // board holds draws them without a read. A project it does not
-          // hold has nowhere to apply into, and a frame missing either set is
-          // one this build cannot read: both keep the read, because the
-          // failure direction is a read rather than a wrong value on screen.
-          const connectors = connectorsFrame(message.update);
-          const applied =
-            connectors === null
-              ? null
-              : applyConnectors(drawn, connectors.project, connectors.gotify, connectors.slack);
-          if (applied !== null) {
-            drawn = applied;
-            view.set({ wire: drawn, refused: null });
-            if (reading) appliedDuringRead = true;
-            return;
-          }
-          if (reading) {
-            stale = true;
-            return;
-          }
-          schedule();
-          return;
+      }
+      // **A drawer's own ask, applied where it lands.** The frame carries one
+      // row whole - its brief and its history - so the drawer opens from the
+      // frame rather than a whole board read.
+      const detail = taskDetailFrame(message.update);
+      if (detail !== null) {
+        const applied = applyDetail(drawn, detail.project, detail.row ?? null);
+        if (applied !== null) {
+          drawn = applied;
+          view.set(folded());
         }
-        // **The six seat-liveness variants read nothing.** A row's stale chip
-        // and its ages are the server's own computation; the marks beat
-        // reconciles them within five minutes, the staleness it already
-        // accepts. Reading 3 MB for a chip was the loop #3063 measured.
         return;
       }
-      // The first read is still owed: the frame has nowhere to land.
-      if (reading) {
-        stale = true;
+      const crons = cronsFrame(message.update);
+      if (crons !== null) {
+        const applied = applyCrons(drawn, crons.project, crons.crons);
+        if (applied !== null) {
+          drawn = applied;
+          view.set(folded());
+        }
         return;
       }
-      schedule();
+      if (Object.keys(message.update).includes('connector_subscriptions_changed')) {
+        // **The frame carries both sets whole**, so a project the drawn board
+        // holds draws them without a read.
+        const connectors = connectorsFrame(message.update);
+        const applied =
+          connectors === null
+            ? null
+            : applyConnectors(drawn, connectors.project, connectors.gotify, connectors.slack);
+        if (applied !== null) {
+          drawn = applied;
+          view.set(folded());
+        }
+      }
+      // **A frame this page cannot fold is not lost**: it marked the board
+      // dirty on the server, and the patch that answers it redraws the store
+      // within the coalescing window. There is no read to ask for.
     });
+    // A drop leaves the store's record in place - the page keeps drawing what
+    // it last read while the reconnect re-subscribes; the answer re-seeds the
+    // store and the subscription above redraws it.
     stopStatus = connection.onStatus((next: ConnectionStatus) => {
-      if (next !== 'open') {
-        reading = false;
-        stale = false;
-        // A reconnect re-subscribes and answers with a fresh snapshot; the
-        // frames in between have nowhere to land. **The in-flight answer died
-        // with the socket**, so a frame applied while it was out no longer
-        // outruns the next one.
-        appliedDuringRead = false;
-        drawn = null;
-      }
+      if (next !== 'open') drawn = null;
     });
-    // The slow beat the server-derived marks need, while there is a page
-    // being watched to read it: **a refused subject is not asked again** -
-    // the refusal is the answer, and a beat that re-asked it would knock on a
-    // door already shut. **The shell's resume is its own arm**: Android
-    // reports neither focus nor reliably a visibility change on return, so
-    // without it the beat would never come back after the first suspend.
-    if (pageWatched()) beatOn();
-    stopAttention = observeAttention(attention);
-    stopForeground = observeForeground('board marks beat', () => attention(true));
   }
 
   function unwatch(): void {
     stopMessages?.();
     stopStatus?.();
-    stopAttention?.();
-    stopForeground?.();
+    stopStore?.();
     stopMessages = null;
     stopStatus = null;
-    stopAttention = null;
-    stopForeground = null;
-    pace.stop();
-    beatOff();
+    stopStore = null;
     connection.unsubscribe('board');
+    REREADS.delete(connection);
     held = null;
     drawn = null;
   }

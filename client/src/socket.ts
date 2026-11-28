@@ -30,6 +30,7 @@ import {
 import { noteSnapshot, noteSubscribe, type PerfRecord } from './perf';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
+import { SubjectStreams } from './wire/apply';
 import { terminalInputFrame, terminalOutputFrame, type TerminalOutputFrame } from './wire/terminal';
 import { settingsFrom } from './wire/types';
 import { takeSettings } from './settings/frame';
@@ -772,6 +773,16 @@ export function connect(
    */
   const bounds = new ReadBounds(stores, (what) => refresh(what), boundMs);
   /**
+   * The whole-read and patch rule this transport shares with the shell's:
+   * see `wire/apply.ts`. Only the three things that are this connection's own
+   * are handed over.
+   */
+  const streams = new SubjectStreams({
+    store: (subject) => stores.get(subject),
+    refresh: (subject) => refresh(subject),
+    report,
+  });
+  /**
    * What to ask for again on a reconnect, in the order it was first asked.
    *
    * `review` rides here for the same reason the role does: the read a page
@@ -1031,7 +1042,12 @@ export function connect(
       store.refuse(why);
       report(`the subscription to ${key} was refused`, why);
     }
-    return subjectFromKey(key);
+    const subject = subjectFromKey(key);
+    // **A refused subject's gap ends with it.** Left behind, the entry says a
+    // whole read is still in flight for a subject that will never answer, and
+    // the next real gap's ask is swallowed for the connection's life.
+    if (subject !== null) streams.end(subject);
+    return subject;
   }
 
   /**
@@ -1115,7 +1131,13 @@ export function connect(
         return;
       case 'snapshot':
         answered(message.subject);
-        stores.get(message.subject)?.set(message.data);
+        // The shared rule seeds the record and its version, and ends any
+        // resync the subject was waiting on: this IS the read that gap asked
+        // for.
+        streams.snapshot(message.subject, message.version, message.data);
+        return;
+      case 'patch':
+        streams.patch(message.subject, message.version, message.data);
         return;
       case 'update':
         route(message.update);
@@ -1471,6 +1493,10 @@ export function connect(
       // server had already answered.
       failPending('the socket dropped before answering');
       awaiting.length = 0;
+      // A drop ends every resync with it: the reconnect asks for the whole
+      // read the gap wanted, so a waiting entry would only suppress the next
+      // gap's ask.
+      streams.reset();
       // **The drop took every server-side subscription with it.** The seat
       // subjects are the client's own to re-open - `session/live.ts`
       // re-attaches the shown one - so they leave this list here; the home
@@ -1536,6 +1562,7 @@ export function connect(
     const last = stores.close(what);
     const key = subjectKey(what);
     if (last) held.delete(key);
+    streams.end(what);
     // **One entry per call, and only while this connection holds one.** A
     // dropped socket took the server's entries with it, so a seat released
     // after a resume - before its click re-attached it - has nothing to give
@@ -1583,6 +1610,7 @@ export function connect(
     // A refusal that lands after the release finds no store and is dropped,
     // which is the right home for it.
     while (stores.get(what) !== undefined) stores.close(what);
+    streams.end(what);
     const open = subscribed.get(key) ?? 0;
     subscribed.delete(key);
     held.delete(key);

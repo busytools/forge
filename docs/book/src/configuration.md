@@ -897,8 +897,8 @@ startup gate the boot runs before any listener binds.
 The server starts no subsystem of its own - no cron scheduler, no
 connector, no second gateway - so the cost of a client is the listener
 and the messages. The socket carries the whole view surface: the home and
-every session, a snapshot of each on subscribe and every update after it,
-with a client's commands going back the other way. **No page is served
+every session, a snapshot of each on subscribe with a typed patch for every
+change after it, with a client's commands going back the other way. **No page is served
 from here.** A client is its own program and draws everything itself; the
 socket hands it data. A bind that fails is fatal on the headless binary:
 with no view of its own it would serve nothing.

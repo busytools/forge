@@ -409,14 +409,14 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
     models_dir: data.models_dir ?? null,
     speaking: speakingFrom(data.speaking),
     rows: (data.rows ?? []).map((row) => rowFrom(row)),
-    in_use: data.in_use.map((model) => ({
+    in_use: (data.in_use ?? []).map((model) => ({
       ...model,
       role: narrow(model.role, ROLES, 'other'),
       state: modelStateFrom(model.state),
       from: fromFrom(model.from),
     })),
     check: checkFrom(data.check),
-    updates: data.updates.map((update) => ({
+    updates: (data.updates ?? []).map((update) => ({
       ...update,
       role: narrow(update.role, ROLES, 'other'),
       candidates: (update.candidates ?? []).map((candidate) => ({
@@ -518,9 +518,13 @@ function benchFrom(bench: BenchState | undefined): BenchState {
   return known;
 }
 
-function checkFrom(check: CatalogueCheck): CatalogueCheck {
-  const state: string = check.state;
-  return (CHECK_STATES as readonly string[]).includes(state) ? check : { state: 'unknown' };
+function checkFrom(check: CatalogueCheck | undefined): CatalogueCheck {
+  // A record a server older than the field answers carries no check; the page
+  // draws that as unread rather than taking the page down in a narrowing.
+  const state: unknown = check?.state;
+  return typeof state === 'string' && (CHECK_STATES as readonly string[]).includes(state)
+    ? (check as CatalogueCheck)
+    : { state: 'unknown' };
 }
 
 /**

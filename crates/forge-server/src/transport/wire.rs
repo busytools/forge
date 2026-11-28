@@ -22,14 +22,21 @@ use forge_primitives::plugins::{PluginUpdateRun, PluginsInventorySnapshot};
 use forge_primitives::review::{ReviewAnchor, ReviewSet, ReviewSide, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
+use forge_primitives::tasks::TaskId;
 use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
+use forge_workspace::bench::{
+    BenchResult, BenchState, ReadAloudState, SpeakingBenchResult, SpeakingBenchState,
+};
+use forge_workspace::board::{BoardRow, FleetRow};
+use forge_workspace::catalogue::{CatalogueCheck, CatalogueRow, InUseModel, ModelUpdate};
 use forge_workspace::env::git_diff::content::{DiffContent, FileContent, scan as scan_content};
 use forge_workspace::env::git_diff::file::{merge_base, read_file_lines};
 use forge_workspace::env::git_diff::resolver::{
     AnchorPlacement, OutdatedReason, place_anchor_in_content, place_anchor_in_lines_with,
 };
 use forge_workspace::env::processes::ProcessSnapshot;
-use forge_workspace::{McpServers, ProjectView};
+use forge_workspace::install::{ActivateState, InstallState, InstalledModel};
+use forge_workspace::{McpServers, ProjectView, TtsView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -252,17 +259,18 @@ pub struct ArchivedWire {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectArchivedWire {
-    pub project: ProjectBoardIdentity,
+    pub project: ProjectIdentity,
     pub rows: Vec<forge_primitives::tasks::Task>,
 }
 
-/// One project's identity, which is all a board row needs to place it.
+/// One project's identity: the key a patch entry places a project by, and all
+/// a board row needs to place it.
 ///
 /// The rest of [`ProjectView`] - its sessions, its accounts, its paths - is
 /// the home's: the board neither hears nor draws it (#2517).
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct ProjectBoardIdentity {
+pub struct ProjectIdentity {
     pub org: String,
     pub name: String,
 }
@@ -271,7 +279,7 @@ pub struct ProjectBoardIdentity {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectBoardWire {
-    pub project: ProjectBoardIdentity,
+    pub project: ProjectIdentity,
     /// The project's live rows as the window draws them: the record
     /// without its prose or history, plus what the board derives on each -
     /// worked time, ages, whether the owner is live, and the marks.
@@ -279,7 +287,9 @@ pub struct ProjectBoardWire {
     /// **The bulk read carries only the window's fields.** A row's `detail`
     /// brief and its transition history load on demand (`tasks__get`), so a
     /// board read is bounded by its row count rather than by how much each
-    /// row has accumulated.
+    /// row has accumulated. The client advances the time-derived figures
+    /// from each row's timestamps and the read's own instant
+    /// (`client/src/board/clock.ts`) - a watched board ticks with no read.
     pub rows: Vec<Value>,
     /// The schedules this project holds.
     ///
@@ -2621,7 +2631,7 @@ fn board(state: &TransportState) -> BoardWire {
     for project in &roster.projects {
         let subscribed = surface.connectors(Some(&project.name));
         projects.push(ProjectBoardWire {
-            project: ProjectBoardIdentity { org: project.org.clone(), name: project.name.clone() },
+            project: ProjectIdentity { org: project.org.clone(), name: project.name.clone() },
             rows: surface.board_rows(&project.name).iter().map(window_row).collect(),
             crons: roster.crons_for_project(&project.name),
             connectors: ProjectConnectorsWire {
@@ -2751,10 +2761,7 @@ fn archived(surface: &ViewSurface) -> ArchivedWire {
     for project in &roster.projects {
         match surface.archived_rows(&project.name) {
             Ok(rows) => projects.push(ProjectArchivedWire {
-                project: ProjectBoardIdentity {
-                    org: project.org.clone(),
-                    name: project.name.clone(),
-                },
+                project: ProjectIdentity { org: project.org.clone(), name: project.name.clone() },
                 rows,
             }),
             // One store answers every project, so one failure is the read's.
@@ -3371,6 +3378,1098 @@ async fn session(
     // the record's own assembly.
     timings.tail_ms = slice_ms(at) - timings.resume_ms;
     Ok(wire)
+}
+
+/// The number a subject's stream is at.
+///
+/// **One counter per subject per connection.** Each connection keeps the
+/// base its own client holds, so the number is that pair's: the subscribe
+/// answer states the version its record is at, every patch states the next
+/// one, and the server sends them in order. A client holds the version of its
+/// own copy: `held + 1` applies, and any other number is a gap - the one way
+/// a subject can go stale - answered with one whole read per subject, never a
+/// loop. A reconnect or a return from sleep asks for the whole read too,
+/// because the patches minted while it was away are gone.
+///
+/// **The rule for every patch below: an absent field means unchanged.** A
+/// field present with a value replaces it, and a record field that is itself
+/// optional crosses as a present `null` when it is cleared - which is why
+/// those patch fields are `Option<Option<T>>` and a missing key still means
+/// keep. An unchanged patch therefore serialises as `{}` and is not sent at
+/// all.
+///
+/// **A patch is written, never read.** The patch types derive `Serialize`
+/// only: the server emits them and a client applies JSON. `Deserialize`
+/// would also collapse a present `null` into a missing key - serde decodes
+/// `Option<Option<T>>` from both as the outer `None` - which is exactly the
+/// distinction "absent means unchanged" needs.
+///
+/// **Dictation has no patch type.** [`Subject::Dictate`]'s subscribe answer
+/// carries no record - a take belongs to the connection and its frames are
+/// the deltas - so there is nothing for a whole read to replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StreamVersion(pub u64);
+
+/// One list entry in a patch: a record set under its id, or that id removed.
+///
+/// **The id is the entry's address, not its position.** A set replaces the
+/// record holding that id where it stands, a removal takes it out, and the
+/// order entries arrive in does not move anything else in the list.
+#[derive(Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PatchEntry<Id, Record> {
+    Set { id: Id, record: Record },
+    Removed { id: Id },
+}
+
+/// One home change: only the fields that moved.
+///
+/// Home's three lists travel by id ([`PatchEntry`]): a project by its org and
+/// name, a seat by its slot, a fleet row by its project name. `unseen` and
+/// the whole fields are replaced when they change.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct HomePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projects: Option<Vec<PatchEntry<ProjectIdentity, ProjectWire>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<PatchEntry<SessionSlot, AgentWire>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fleet: Option<Vec<PatchEntry<String, FleetRow>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unseen: Option<Vec<SessionSlot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<forge_workspace::AccountPoolView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<ConnectorsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictate: Option<DictateWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<Option<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge_version_short: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_status: Option<Option<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fatal_error: Option<Option<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub biometric: Option<ReadWire<Vec<forge_primitives::biometric::BiometricEnrolment>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault: Option<Option<VaultWire>>,
+}
+
+/// One board change: only the projects whose detail moved.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct BoardPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projects: Option<Vec<BoardProjectEntry>>,
+}
+
+/// One project's board entry: its detail set, or the project removed.
+#[derive(Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum BoardProjectEntry {
+    /// A project's board, with only the lists that moved. A project the
+    /// client has never read arrives with every field set.
+    Set {
+        identity: ProjectIdentity,
+        board: ProjectBoardPatch,
+    },
+    Removed {
+        identity: ProjectIdentity,
+    },
+}
+
+/// One project's board change: only the lists that moved.
+///
+/// Rows travel by task id ([`PatchEntry`]): a row added or replaced is a
+/// `set`, a deleted row is `removed`. `crons` and `connectors` are replaced
+/// whole when they change.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectBoardPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Vec<PatchEntry<TaskId, BoardRow>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crons: Option<Vec<forge_primitives::CronEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<ProjectConnectorsWire>,
+}
+
+/// One seat change: only the fields that moved.
+///
+/// **The conversation is frames, not this.** A seat's messages already arrive
+/// as `Update` frames numbered on the seat's counter; the subscribe answer
+/// carries the first window and a gap is answered by the seat's own repair
+/// reads. `conversation` is carried here so the patch is total over the
+/// record, and a live patch leaves it absent. `pending_ask` is derived from
+/// `pending_asks` when the record is built, so a patch that moves one moves
+/// the other.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct SessionPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot: Option<SessionSlot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<SessionStateWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composer: Option<ComposerWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<SessionHeaderWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Option<McpServers>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processes: Option<Option<ProcessSnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_tasks: Option<Vec<forge_workspace::BackgroundTask>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitors: Option<Vec<MonitorRecord>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<Option<forge_primitives::terminal::TerminalSummary>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_ask: Option<Option<PendingAskWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_asks: Option<Vec<PendingAskWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<ConversationWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slash_commands: Option<Vec<AvailableCommand>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<Vec<AvailableAgent>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_instances: Option<Vec<forge_primitives::runtime::SubagentCard>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_index: Option<Arc<FileIndex>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_sessions: Option<Vec<ResumableSessionWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<ReviewsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree_reviews: Option<ReviewsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<WorkState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git: Option<forge_primitives::git_diff::GitWorkView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<Option<forge_primitives::git::GitPrInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closes: Option<Vec<forge_primitives::git::GitIssueRef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffContent>,
+}
+
+/// One models-page change: only the fields that moved.
+///
+/// A bench tick, an install and a catalogue check each move one field, so a
+/// running bench carries the bench state and nothing of the feed.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct DictateModelsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_dir: Option<Option<std::path::PathBuf>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaking: Option<TtsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_use: Option<Vec<InUseModel>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<CatalogueCheck>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updates: Option<Vec<ModelUpdate>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Vec<CatalogueRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install: Option<InstallState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activate: Option<ActivateState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed: Option<Vec<InstalledModel>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bench: Option<BenchState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub results: Option<Vec<BenchResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaking_bench: Option<SpeakingBenchState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaking_results: Option<Vec<SpeakingBenchResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_aloud: Option<ReadAloudState>,
+}
+
+/// One extensions-page change: only the fields that moved.
+///
+/// The inventory and the update run are the same objects the live frames
+/// carry, so a patch that moves either carries what the frame carried.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ExtensionsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Option<PluginsInventorySnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_run: Option<Option<PluginUpdateRun>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<Vec<LspCheckWire>>,
+}
+
+/// The patch that carries `new` over `old`, or `None` when nothing moved.
+///
+/// **The record's own serialised keys are the patch's fields.** A change is
+/// found by comparing the two records field by field, so a field added to a
+/// record crosses without this function learning its name - which is what
+/// keeps the patch total (rule 25) without a second table to drift from the
+/// record. Home and the board address their lists by id; every other subject
+/// replaces a whole field, because its lists have no ids to address (the
+/// seat's stream is numbered by its own frames; the small records change
+/// whole).
+pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> Option<Value> {
+    match subject {
+        Subject::Home => home_patch(old, new),
+        Subject::Board => board_patch(old, new),
+        Subject::Session(_) | Subject::DictateModels | Subject::Extensions => {
+            whole_fields(old, new)
+        }
+        // **Two subjects have no patch, for their own reasons.**
+        //
+        // A take is not a record: its frames are the deltas, and a subscribe
+        // is answered with nothing to keep.
+        //
+        // **The token pool has no push.** Nothing in the stream announces a
+        // transcript being written, so nothing ever marks `Usage` dirty; its
+        // subscription is one scan on the ask and its version never moves. A
+        // patch type for it would be dead code, which is why there is none.
+        //
+        // **The closed view re-reads rather than patching**: its frame is a
+        // task write, which says the archive may have moved but not what it
+        // now holds, so the subscribed page asks again rather than drawing a
+        // patch this server never computed.
+        Subject::Dictate | Subject::Usage | Subject::Archived => None,
+    }
+}
+
+/// The seat's delta: the fields its frames do not carry.
+///
+/// **A seat's frames deliver nearly everything as it moves** - the
+/// conversation, the asks, the processes, the index, the working tree - and
+/// the patch exists for what no frame announces: the resolved composer
+/// (`machine_turn`'s abort says only "not a handoff"), the review rows, the
+/// `/resume` list and the branch diff. Diffing the whole record would re-send
+/// whatever a run of frames moved since the base, and for `conversation`
+/// alone that is the entire window - the megabytes the frames already drew.
+const SEAT_PATCH_FIELDS: &[&str] =
+    &["composer", "reviews", "tree_reviews", "resume_sessions", "diff"];
+
+/// What a patch for this subject can carry, as the base keeps it.
+///
+/// **A connection's patch base is the projection, not the whole record.** A
+/// seat's patch can carry only [`SEAT_PATCH_FIELDS`], so holding its whole
+/// record per connection buys nothing but megabytes - the conversation and the
+/// file index are never patched, and a large seat is tens of megabytes held
+/// once per connection that reads it. The other subjects' whole-field patches
+/// can carry any field, so their projection is the record itself; the two
+/// subjects with no patch at all project to null and their base costs nothing.
+pub(crate) fn patch_projection(subject: &Subject, record: &Value) -> Value {
+    match subject {
+        Subject::Session(_) => {
+            let Some(fields) = record.as_object() else {
+                return Value::Null;
+            };
+            let mut projected = serde_json::Map::new();
+            for field in SEAT_PATCH_FIELDS {
+                if let Some(value) = fields.get(*field) {
+                    projected.insert((*field).to_owned(), value.clone());
+                }
+            }
+            Value::Object(projected)
+        }
+        Subject::Dictate | Subject::Usage => Value::Null,
+        _ => record.clone(),
+    }
+}
+
+/// Every field whose value moved, as itself.
+fn whole_fields(old: &Value, new: &Value) -> Option<Value> {
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        return None;
+    };
+    let mut patch = serde_json::Map::new();
+    for (key, value) in new {
+        if old.get(key) != Some(value) {
+            patch.insert(key.clone(), value.clone());
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
+/// One field's change: the new value when it differs, `None` otherwise.
+fn whole_field(old: Option<&Value>, new: &Value) -> Option<Value> {
+    (old != Some(new)).then(|| new.clone())
+}
+
+/// The home: its three list fields travel by id, and every other field is
+/// replaced whole when it moves.
+fn home_patch(old: &Value, new: &Value) -> Option<Value> {
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        return None;
+    };
+    let mut patch = serde_json::Map::new();
+    for (key, value) in new {
+        let changed = match key.as_str() {
+            "projects" => entry_field(old.get(key), value, |entry| {
+                // **The identity is org and name, not the whole project
+                // view.** A session opening inside `ProjectView.sessions`
+                // moves the view, and keying on it would read one project as
+                // removed and another added - resending the row and moving
+                // it in the list for a change that belongs to the agents.
+                let project = entry.get("project")?;
+                Some(serde_json::json!({
+                    "org": project.get("org")?,
+                    "name": project.get("name")?,
+                }))
+            }),
+            "agents" => entry_field(old.get(key), value, |entry| entry.get("slot").cloned()),
+            "fleet" => entry_field(old.get(key), value, |entry| entry.get("project").cloned()),
+            _ => whole_field(old.get(key), value),
+        };
+        if let Some(value) = changed {
+            patch.insert(key.clone(), value);
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
+/// The board: each project's entry carries only its moved lists, its rows
+/// addressed by task id; a project that vanished is a removal.
+fn board_patch(old: &Value, new: &Value) -> Option<Value> {
+    let new = new.get("projects").and_then(Value::as_array)?;
+    let old = old.get("projects").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let old_by_id = by_id(old, |entry| entry.get("project").cloned());
+    let mut entries = Vec::new();
+    let mut kept = std::collections::HashSet::new();
+    for entry in new {
+        let Some(identity) = entry.get("project").cloned() else { continue };
+        let key = id_key(&identity);
+        kept.insert(key.clone());
+        let board = match old_by_id.get(&key) {
+            Some((_, held)) => project_board_field_diff(held, entry),
+            None => Some(whole_board_detail(entry)),
+        };
+        if let Some(board) = board {
+            entries.push(serde_json::json!({
+                "op": "set",
+                "identity": identity,
+                "board": board,
+            }));
+        }
+    }
+    for (key, (identity, _)) in &old_by_id {
+        if !kept.contains(key) {
+            entries.push(serde_json::json!({ "op": "removed", "identity": identity }));
+        }
+    }
+    (!entries.is_empty()).then_some(serde_json::json!({ "projects": entries }))
+}
+
+/// One project's moved board lists: rows by task id, crons and connectors
+/// whole. `project` is the entry's identity and never part of the detail.
+fn project_board_field_diff(old: &Value, new: &Value) -> Option<Value> {
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        return None;
+    };
+    let mut patch = serde_json::Map::new();
+    for (key, value) in new {
+        let changed = match key.as_str() {
+            "project" => None,
+            "rows" => entry_field(old.get(key), value, |row| {
+                row.get("task").and_then(|task| task.get("id")).cloned()
+            }),
+            _ => whole_field(old.get(key), value),
+        };
+        if let Some(value) = changed {
+            patch.insert(key.clone(), value);
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
+/// A project entry the client has never read: every list of its detail.
+fn whole_board_detail(entry: &Value) -> Value {
+    let Some(entry) = entry.as_object() else {
+        return Value::Object(serde_json::Map::new());
+    };
+    Value::Object(
+        entry
+            .iter()
+            .filter(|(key, _)| key.as_str() != "project")
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
+}
+
+/// One list field's delta: a `set` for an entry that is new or moved, a
+/// `removed` for an id the new list no longer holds.
+fn entry_field(
+    old: Option<&Value>,
+    new: &Value,
+    id: impl Fn(&Value) -> Option<Value>,
+) -> Option<Value> {
+    let old = old.and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let new = new.as_array()?;
+    let old_by_id = by_id(old, &id);
+    let mut entries = Vec::new();
+    let mut kept = std::collections::HashSet::new();
+    for entry in new {
+        let Some(entry_id) = id(entry) else { continue };
+        let key = id_key(&entry_id);
+        kept.insert(key.clone());
+        if old_by_id.get(&key).is_none_or(|(_, held)| *held != entry) {
+            entries.push(serde_json::json!({ "op": "set", "id": entry_id, "record": entry }));
+        }
+    }
+    for (key, (entry_id, _)) in &old_by_id {
+        if !kept.contains(key) {
+            entries.push(serde_json::json!({ "op": "removed", "id": entry_id }));
+        }
+    }
+    (!entries.is_empty()).then_some(Value::Array(entries))
+}
+
+/// A list keyed by the id its entries carry, each id kept as it crosses.
+fn by_id(
+    entries: &[Value],
+    id: impl Fn(&Value) -> Option<Value>,
+) -> std::collections::HashMap<String, (Value, &Value)> {
+    entries.iter().filter_map(|entry| id(entry).map(|id| (id_key(&id), (id, entry)))).collect()
+}
+
+/// One id as a stable key: an object's fields in a fixed order, so two
+/// serialisations of the same slot or project identity match.
+fn id_key(id: &Value) -> String {
+    match id {
+        Value::Object(fields) => {
+            let mut names: Vec<&String> = fields.keys().collect();
+            names.sort();
+            let mut key = String::new();
+            for name in names {
+                key.push_str(name);
+                key.push('\u{0}');
+                key.push_str(&id_key(&fields[name]));
+                key.push('\u{1}');
+            }
+            key
+        }
+        Value::Array(items) => items.iter().map(id_key).collect::<Vec<_>>().join("\u{1}"),
+        other => other.to_string(),
+    }
+}
+
+/// The patch types' proof: what a record carries, its patch can carry, and a
+/// field added to either side cannot compile until the other catches up.
+///
+/// **The fixture is the conversion, not the assertion.** Each `whole_*`
+/// function destructures its record without `..` and fills every field of the
+/// patch, so a field added to the record - or to the patch - is a compile
+/// error here rather than a silent gap on the wire. The conversion is never
+/// called: compiling it is what the test asserts.
+#[cfg(test)]
+mod patches {
+    use super::*;
+    use forge_workspace::catalogue::DictateModelsSnapshot;
+
+    fn whole_home(record: HomeWire) -> HomePatch {
+        let HomeWire {
+            projects,
+            agents,
+            fleet,
+            unseen,
+            accounts,
+            connectors,
+            dictate,
+            voice,
+            cli_version,
+            forge_version,
+            forge_version_short,
+            boot_id,
+            service_status,
+            fatal_error,
+            biometric,
+            vault,
+        } = record;
+        HomePatch {
+            projects: Some(
+                projects
+                    .into_iter()
+                    .map(|row| PatchEntry::Set {
+                        id: ProjectIdentity {
+                            org: row.project.org.clone(),
+                            name: row.project.name.clone(),
+                        },
+                        record: row,
+                    })
+                    .collect(),
+            ),
+            agents: Some(
+                agents
+                    .into_iter()
+                    .map(|row| PatchEntry::Set { id: row.slot.clone(), record: row })
+                    .collect(),
+            ),
+            fleet: Some(
+                fleet
+                    .into_iter()
+                    .map(|row| PatchEntry::Set { id: row.project.clone(), record: row })
+                    .collect(),
+            ),
+            unseen: Some(unseen),
+            accounts: Some(accounts),
+            connectors: Some(connectors),
+            dictate: Some(dictate),
+            voice: Some(voice),
+            cli_version: Some(cli_version),
+            forge_version: Some(forge_version),
+            forge_version_short: Some(forge_version_short),
+            boot_id: Some(boot_id),
+            service_status: Some(service_status),
+            fatal_error: Some(fatal_error),
+            biometric: Some(biometric),
+            vault: Some(vault),
+        }
+    }
+
+    fn whole_board(record: BoardWire) -> BoardPatch {
+        let BoardWire { projects } = record;
+        BoardPatch {
+            projects: Some(
+                projects
+                    .into_iter()
+                    .map(|project| {
+                        let ProjectBoardWire { project: identity, rows, crons, connectors } =
+                            project;
+                        BoardProjectEntry::Set {
+                            identity,
+                            board: ProjectBoardPatch {
+                                rows: Some(
+                                    rows.into_iter()
+                                        .map(|row| PatchEntry::Set {
+                                            id: row.task.id.clone(),
+                                            record: row,
+                                        })
+                                        .collect(),
+                                ),
+                                crons: Some(crons),
+                                connectors: Some(connectors),
+                            },
+                        }
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn whole_session(record: SessionWire) -> SessionPatch {
+        let SessionWire {
+            slot,
+            state,
+            composer,
+            header,
+            mcp,
+            processes,
+            background_tasks,
+            monitors,
+            terminal,
+            pending_ask,
+            pending_asks,
+            conversation,
+            slash_commands,
+            subagents,
+            subagent_instances,
+            file_index,
+            resume_sessions,
+            reviews,
+            tree_reviews,
+            work,
+            git,
+            pr,
+            closes,
+            diff,
+        } = record;
+        SessionPatch {
+            slot: Some(slot),
+            state: Some(state),
+            composer: Some(composer),
+            header: Some(header),
+            mcp: Some(mcp),
+            processes: Some(processes),
+            background_tasks: Some(background_tasks),
+            monitors: Some(monitors),
+            terminal: Some(terminal),
+            pending_ask: Some(pending_ask),
+            pending_asks: Some(pending_asks),
+            conversation: Some(conversation),
+            slash_commands: Some(slash_commands),
+            subagents: Some(subagents),
+            subagent_instances: Some(subagent_instances),
+            file_index: Some(file_index),
+            resume_sessions: Some(resume_sessions),
+            reviews: Some(reviews),
+            tree_reviews: Some(tree_reviews),
+            work: Some(work),
+            git: Some(git),
+            pr: Some(pr),
+            closes: Some(closes),
+            diff: Some(diff),
+        }
+    }
+
+    fn whole_dictate_models(record: DictateModelsSnapshot) -> DictateModelsPatch {
+        let DictateModelsSnapshot {
+            enabled,
+            models_dir,
+            speaking,
+            in_use,
+            check,
+            updates,
+            rows,
+            install,
+            activate,
+            installed,
+            bench,
+            results,
+            speaking_bench,
+            speaking_results,
+            read_aloud,
+        } = record;
+        DictateModelsPatch {
+            enabled: Some(enabled),
+            models_dir: Some(models_dir),
+            speaking: Some(speaking),
+            in_use: Some(in_use),
+            check: Some(check),
+            updates: Some(updates),
+            rows: Some(rows),
+            install: Some(install),
+            activate: Some(activate),
+            installed: Some(installed),
+            bench: Some(bench),
+            results: Some(results),
+            speaking_bench: Some(speaking_bench),
+            speaking_results: Some(speaking_results),
+            read_aloud: Some(read_aloud),
+        }
+    }
+
+    fn whole_extensions(record: ExtensionsWire) -> ExtensionsPatch {
+        let ExtensionsWire { snapshot, update_run, lsp } = record;
+        ExtensionsPatch { snapshot: Some(snapshot), update_run: Some(update_run), lsp: Some(lsp) }
+    }
+
+    #[test]
+    fn the_home_patch_carries_every_home_field() {
+        let _: fn(HomeWire) -> HomePatch = whole_home;
+    }
+
+    #[test]
+    fn the_board_patch_carries_every_board_field() {
+        let _: fn(BoardWire) -> BoardPatch = whole_board;
+    }
+
+    #[test]
+    fn the_session_patch_carries_every_session_field() {
+        let _: fn(SessionWire) -> SessionPatch = whole_session;
+    }
+
+    #[test]
+    fn the_dictate_models_patch_carries_every_field() {
+        let _: fn(DictateModelsSnapshot) -> DictateModelsPatch = whole_dictate_models;
+    }
+
+    #[test]
+    fn the_extensions_patch_carries_every_extensions_field() {
+        let _: fn(ExtensionsWire) -> ExtensionsPatch = whole_extensions;
+    }
+
+    /// Every subject states whether its deltas are a patch or its own frames:
+    /// a variant added to the wire fails to compile here until that is decided.
+    #[test]
+    fn every_subject_has_a_patch_decision() {
+        fn carries(subject: &Subject) -> &'static str {
+            match subject {
+                Subject::Home => "home patch",
+                Subject::Board => "board patch",
+                Subject::Session(_) => "session patch",
+                Subject::Usage => "no push: one scan on the ask, and its version never moves",
+                Subject::DictateModels => "dictate models patch",
+                Subject::Extensions => "extensions patch",
+                Subject::Dictate => "no record: its own frames are the deltas",
+            }
+        }
+        let _: fn(&Subject) -> &'static str = carries;
+    }
+
+    /// The rule, at the wire: a patch with nothing changed is an empty object,
+    /// so an unchanged subject sends nothing at all.
+    #[test]
+    fn an_unchanged_patch_carries_no_keys() {
+        let patches = [
+            ("home", serde_json::to_value(HomePatch::default()).expect("home")),
+            ("board", serde_json::to_value(BoardPatch::default()).expect("board")),
+            ("session", serde_json::to_value(SessionPatch::default()).expect("session")),
+            (
+                "dictate models",
+                serde_json::to_value(DictateModelsPatch::default()).expect("dictate models"),
+            ),
+            ("extensions", serde_json::to_value(ExtensionsPatch::default()).expect("extensions")),
+        ];
+        for (subject, patch) in patches {
+            assert_eq!(
+                patch,
+                serde_json::json!({}),
+                "an unchanged {subject} patch must carry no keys",
+            );
+        }
+    }
+
+    /// A record field that is itself optional needs three states on the wire:
+    /// absent (keep), present with a value (replace), present `null` (clear).
+    #[test]
+    fn a_cleared_optional_field_crosses_as_null_not_absent() {
+        let cleared = HomePatch { cli_version: Some(None), ..HomePatch::default() };
+        assert_eq!(
+            serde_json::to_value(cleared).expect("json"),
+            serde_json::json!({ "cli_version": null }),
+            "clearing a value is a present null, not an absent key",
+        );
+
+        let set = HomePatch { forge_version: Some("build".to_owned()), ..HomePatch::default() };
+        assert_eq!(
+            serde_json::to_value(set).expect("json"),
+            serde_json::json!({ "forge_version": "build" }),
+            "a changed plain field crosses alone",
+        );
+    }
+
+    /// One list vocabulary for every subject: a set replaces by id, a removal
+    /// takes the id out.
+    #[test]
+    fn a_list_entry_is_a_set_or_a_removal_by_id() {
+        let set: PatchEntry<String, u32> = PatchEntry::Set { id: "row".to_owned(), record: 7 };
+        assert_eq!(
+            serde_json::to_value(set).expect("json"),
+            serde_json::json!({ "op": "set", "id": "row", "record": 7 }),
+        );
+        let removed: PatchEntry<String, u32> = PatchEntry::Removed { id: "row".to_owned() };
+        assert_eq!(
+            serde_json::to_value(removed).expect("json"),
+            serde_json::json!({ "op": "removed", "id": "row" }),
+        );
+    }
+
+    fn a_slot(org: &str, project: &str, label: &str) -> Value {
+        serde_json::json!({ "org": org, "project": project, "label": label })
+    }
+
+    fn a_home() -> Value {
+        serde_json::json!({
+            "projects": [{
+                "project": { "org": "TestOrg", "name": "proj" },
+                "work": { "branch": "main", "changed": 0, "gate": "in_repo" },
+                "would_bind": true,
+                "chip": null,
+            }],
+            "agents": [{
+                "slot": a_slot("TestOrg", "proj", "lead"),
+                "label": "lead",
+                "lifecycle": "Idle",
+            }],
+            "fleet": [{ "project": "proj", "live_workers": 1, "slots": null, "queue": 0 }],
+            "unseen": [],
+            "accounts": { "loading": [] },
+            "connectors": {
+                "gotify": { "connected": false },
+                "slack": { "connected_workspaces": [], "load_failed": false },
+            },
+            "dictate": { "enabled": false, "snapshot": null, "models_dir": null },
+            "voice": { "enabled": false, "models_dir": null },
+            "cli_version": null,
+            "forge_version": "1.2.3",
+            "forge_version_short": "abc",
+            "boot_id": "boot",
+            "service_status": null,
+            "fatal_error": null,
+            "biometric": { "outcome": "read", "value": [] },
+            "vault": null,
+        })
+    }
+
+    fn a_board() -> Value {
+        serde_json::json!({
+            "projects": [{
+                "project": { "org": "TestOrg", "name": "proj" },
+                "rows": [{
+                    "task": { "id": "t1", "subject": "a row" },
+                    "worked_secs": 1,
+                }],
+                "crons": [],
+                "connectors": { "gotify": [], "slack": [] },
+            }],
+        })
+    }
+
+    fn a_session() -> Value {
+        serde_json::json!({
+            "slot": a_slot("TestOrg", "proj", "lead"),
+            "composer": { "machine": null, "bind": "hold", "mode": "toggle", "notice": null },
+            "header": { "seq": 7 },
+            "resume_sessions": [],
+        })
+    }
+
+    fn an_extensions() -> Value {
+        serde_json::json!({ "snapshot": null, "update_run": null, "lsp": [] })
+    }
+
+    fn dictate_models() -> Value {
+        serde_json::json!({ "enabled": false, "models_dir": null, "bench": null, "rows": [] })
+    }
+
+    fn usage() -> Value {
+        serde_json::json!({
+            "today": { "by_model": [], "by_project": [], "total": { "label": "TOTAL" } },
+            "week": { "by_model": [], "by_project": [], "total": { "label": "TOTAL" } },
+            "month": { "by_model": [], "by_project": [], "total": { "label": "TOTAL" } },
+            "lifetime": { "by_model": [], "by_project": [], "total": { "label": "TOTAL" } },
+            "pricing_available": false,
+        })
+    }
+
+    /// A record that did not move sends nothing at all.
+    #[test]
+    fn an_unchanged_record_makes_no_patch() {
+        for (subject, record) in [
+            (Subject::Home, a_home()),
+            (Subject::Board, a_board()),
+            (Subject::Session(fixture_seat()), a_session()),
+            (Subject::Extensions, an_extensions()),
+            (Subject::DictateModels, dictate_models()),
+            (Subject::Usage, usage()),
+        ] {
+            assert_eq!(
+                patch_for_record(&subject, &record, &record),
+                None,
+                "{subject:?} sent a patch with nothing changed",
+            );
+        }
+    }
+
+    /// Home's lists travel by id: a changed agent is one entry, a vanished
+    /// project is a removal, and a whole field is replaced as itself.
+    #[test]
+    fn a_home_patch_carries_only_what_moved() {
+        let old = a_home();
+        let mut new = old.clone();
+        new["agents"][0]["label"] = serde_json::json!("renamed");
+        let patch = patch_for_record(&Subject::Home, &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "agents": [{
+                    "op": "set",
+                    "id": a_slot("TestOrg", "proj", "lead"),
+                    "record": new["agents"][0],
+                }],
+            }),
+            "only the moved agent crosses, addressed by its slot",
+        );
+
+        let mut new = old.clone();
+        new["projects"] = serde_json::json!([]);
+        new["cli_version"] = serde_json::json!({ "installed": "2", "latest": "2" });
+        let patch = patch_for_record(&Subject::Home, &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "projects": [{
+                    "op": "removed",
+                    "id": { "org": "TestOrg", "name": "proj" },
+                }],
+                "cli_version": { "installed": "2", "latest": "2" },
+            }),
+            "the removed project is named and the whole field is replaced",
+        );
+    }
+
+    /// Board rows travel by task id inside their project's entry, and a
+    /// vanished project is a removal.
+    #[test]
+    fn a_board_patch_carries_the_moved_rows_and_projects() {
+        let old = a_board();
+        let mut new = old.clone();
+        new["projects"][0]["rows"][0]["worked_secs"] = serde_json::json!(60);
+        let patch = patch_for_record(&Subject::Board, &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "projects": [{
+                    "op": "set",
+                    "identity": { "org": "TestOrg", "name": "proj" },
+                    "board": {
+                        "rows": [{
+                            "op": "set",
+                            "id": "t1",
+                            "record": new["projects"][0]["rows"][0],
+                        }],
+                    },
+                }],
+            }),
+            "the row crosses under its task id and nothing else does",
+        );
+
+        let mut new = old.clone();
+        new["projects"] = serde_json::json!([]);
+        let patch = patch_for_record(&Subject::Board, &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "projects": [{
+                    "op": "removed",
+                    "identity": { "org": "TestOrg", "name": "proj" },
+                }],
+            }),
+        );
+    }
+
+    /// A seat patch replaces whole fields - the seat's list fields have no
+    /// ids to address, and its stream is versioned by its own frame numbers.
+    ///
+    /// **Both sides are projected first**, exactly as `write_snapshot` and
+    /// `emit_patches` do: the base is what a patch can carry, so a field
+    /// outside the projection is not the diff's to see.
+    #[test]
+    fn a_seat_patch_carries_the_whole_moved_field() {
+        fn seat_patch(old: &Value, new: &Value) -> Option<Value> {
+            let subject = Subject::Session(fixture_seat());
+            patch_for_record(
+                &subject,
+                &patch_projection(&subject, old),
+                &patch_projection(&subject, new),
+            )
+        }
+
+        let old = a_session();
+        let mut new = old.clone();
+        new["composer"]["machine"] = serde_json::json!({ "kind": "compacting" });
+        let patch = seat_patch(&old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({ "composer": new["composer"] }),
+            "one whole field, no entries",
+        );
+
+        // **The conversation is frames, not a patch.** A run of chat frames
+        // since the base moves it, and re-sending the window here would send
+        // the megabytes the frames already drew.
+        let mut new = old.clone();
+        new["conversation"] = serde_json::json!({ "turns": [{ "messages": [] }] });
+        assert_eq!(seat_patch(&old, &new), None, "a conversation-only change is not a patch");
+
+        let mut new = old.clone();
+        new["reviews"] = serde_json::json!({
+            "threads": { "outcome": "read", "value": [] },
+            "reviews": { "outcome": "read", "value": [] },
+        });
+        assert_eq!(
+            seat_patch(&old, &new),
+            Some(serde_json::json!({ "reviews": new["reviews"] })),
+            "a review row crossed as its own field",
+        );
+    }
+
+    /// **The base a patch is diffed against is the projection, not the
+    /// record.** A seat's base holds the fields its patch can name and none of
+    /// the megabytes no patch can carry; the subjects with no patch hold
+    /// nothing.
+    #[test]
+    fn a_seat_base_is_the_projection_a_patch_can_carry() {
+        let projected = patch_projection(&Subject::Session(fixture_seat()), &a_session());
+        let fields = projected.as_object().expect("a seat's projection is an object");
+        for field in fields.keys() {
+            assert!(
+                SEAT_PATCH_FIELDS.contains(&field.as_str()),
+                "the projection carries {field}, which no patch can name",
+            );
+        }
+        for present in ["composer", "resume_sessions"] {
+            assert!(fields.contains_key(present), "the projection dropped {present}");
+        }
+        assert_eq!(patch_projection(&Subject::Usage, &usage()), Value::Null);
+        assert_eq!(patch_projection(&Subject::Dictate, &Value::Null), Value::Null);
+    }
+
+    /// **A home project's identity is its org and name.** A session opening
+    /// inside the project's view must not read as one project removed and
+    /// another added.
+    #[test]
+    fn a_home_project_keeps_its_identity_when_a_session_moves_inside_it() {
+        let old = a_home();
+        let mut new = old.clone();
+        new["projects"][0]["project"]["sessions"] = serde_json::json!([{ "label": "w1" }]);
+        let patch = patch_for_record(&Subject::Home, &old, &new).expect("a patch");
+        let entries = patch["projects"].as_array().expect("the project entries");
+        assert_eq!(entries.len(), 1, "one project read as two: {patch}");
+        assert_eq!(entries[0]["op"], "set");
+        assert_eq!(
+            entries[0]["id"],
+            serde_json::json!({ "org": "TestOrg", "name": "proj" }),
+            "the identity is the org and name pair",
+        );
+    }
+
+    /// The small records replace a whole field per change, and a field no
+    /// table knows about still crosses - the rule-25 control.
+    #[test]
+    fn the_small_records_carry_any_moved_field() {
+        let old = an_extensions();
+        let mut new = old.clone();
+        new["lsp"] = serde_json::json!([{ "server": "rust-analyzer", "on_path": true }]);
+        assert_eq!(
+            patch_for_record(&Subject::Extensions, &old, &new),
+            Some(serde_json::json!({ "lsp": new["lsp"] })),
+        );
+
+        let old = dictate_models();
+        let mut new = old.clone();
+        new["bench"] = serde_json::json!({ "kind": "running" });
+        assert_eq!(
+            patch_for_record(&Subject::DictateModels, &old, &new),
+            Some(serde_json::json!({ "bench": { "kind": "running" } })),
+        );
+
+        let old = usage();
+        let mut new = old.clone();
+        new["pricing_available"] = serde_json::json!(true);
+        assert_eq!(
+            patch_for_record(&Subject::Usage, &old, &new),
+            None,
+            "the token pool has no push, so it has no patch",
+        );
+
+        let old = a_home();
+        let mut new = old.clone();
+        new["a_field_added_later"] = serde_json::json!(7);
+        assert_eq!(
+            patch_for_record(&Subject::Home, &old, &new),
+            Some(serde_json::json!({ "a_field_added_later": 7 })),
+            "a field no table knows about still crosses",
+        );
+    }
 }
 
 #[cfg(test)]

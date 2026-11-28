@@ -67,7 +67,9 @@ function parsedTask(task: Record<string, unknown>): Record<string, unknown> {
   const raw = {
     projects: [{ work: { gate: 'in_repo' }, rows: [{ task }] }],
   } as unknown as BoardWire;
-  const taskRow = boardFrom(raw).projects[0]?.rows[0]?.task;
+  const parsed = boardFrom(raw);
+  if (parsed === null) throw new Error('the board record did not parse');
+  const taskRow = parsed.projects[0]?.rows[0]?.task;
   if (taskRow === undefined) throw new Error('the row did not parse');
   return taskRow as unknown as Record<string, unknown>;
 }
@@ -187,8 +189,14 @@ describe("the drawer's row", () => {
     };
   }
 
+  /** The narrowing answers this fixture; a null would be the fixture stale. */
+  const narrowed = (data: unknown): BoardWire => {
+    const out = boardFrom(data as BoardWire);
+    if (out === null) throw new Error('the fixture is not a board record');
+    return out;
+  };
   const wire = (): BoardWire =>
-    boardFrom({
+    narrowed({
       projects: [
         {
           project: { org: 'TestOrg', name: 'proj' },
@@ -197,7 +205,7 @@ describe("the drawer's row", () => {
           connectors: { gotify: [], slack: [] },
         },
       ],
-    } as unknown as BoardWire);
+    });
 
   it('replaces the bulk row with the whole record', () => {
     const step = {
@@ -246,7 +254,7 @@ describe("the drawer's row", () => {
     ).toEqual(['t-9']);
     // A bulk read that carries the row only as a window copy - no brief, no
     // history - must not shadow the whole copy the drawer holds.
-    const stripped = boardFrom({
+    const stripped = narrowed({
       projects: [
         {
           project: { org: 'TestOrg', name: 'proj' },
@@ -255,14 +263,14 @@ describe("the drawer's row", () => {
           connectors: { gotify: [], slack: [] },
         },
       ],
-    } as unknown as BoardWire);
+    });
     expect(
       carryDetail(first, stripped).projects[0]?.detail?.map((entry) => entry.task.id),
       'the stripped live copy left the drawer without its brief',
     ).toEqual(['t-9']);
     // A live copy that is itself WHOLE is the fresher one: the detail copy
     // steps aside.
-    const liveAgain = boardFrom({
+    const liveAgain = narrowed({
       projects: [
         {
           project: { org: 'TestOrg', name: 'proj' },
@@ -271,7 +279,7 @@ describe("the drawer's row", () => {
           connectors: { gotify: [], slack: [] },
         },
       ],
-    } as unknown as BoardWire);
+    });
     expect(carryDetail(first, liveAgain).projects[0]?.detail).toEqual([]);
   });
 

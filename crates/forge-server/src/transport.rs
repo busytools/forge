@@ -334,12 +334,15 @@ pub mod wire;
 /// queued send is the CLI's own `started` row, and a stop-hook batch draws
 /// as one frame. `baselines/socket/36/` is the record a v36 server emitted.
 ///
-/// **v37 is the delta subscriptions'.** A subscription's first answer is
-/// its whole read; after that a subject moves by typed patches rather than
-/// a periodic whole read. Its baseline lands with that cut.
+/// **v37 is the delta stream.** A subscribe answers with its record and the
+/// version it stands at, and every change after that is a patch carrying only
+/// the fields that moved, each the next number; nothing is re-sent on a
+/// clock. A v36 client has no vocabulary for the version or the patch, so it
+/// draws the answer and never updates again; the two halves move together.
+/// `baselines/socket/37/` is the record a v37 server emitted.
 ///
 /// **v38 is the task board's retrofit.** A row gains `kind`, `cadence`, its
-/// `request` record, its `version` and the window's fields, loses `attempt`,
+/// `request` record and its `version`, and the window's fields, loses `attempt`,
 /// and the board's marks drop from seven to five: `no_movement` folds into
 /// `stale` and `waiting_too_long` into `overdue`, each row carries
 /// `owner_live` and the derives the digest's item lines read, and a terminal

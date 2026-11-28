@@ -13,6 +13,7 @@
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
+import { SubjectStreams } from '../wire/apply';
 import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
 import type { ComposerProps, ComposerRecord, SeatRead } from './view';
 
@@ -314,6 +315,11 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
   const frames: Uint8Array[] = [];
   const statuses = new Set<(status: ConnectionStatus) => void>();
   const stores = new Stores();
+  const streams = new SubjectStreams({
+    store: (subject) => stores.get(subject),
+    refresh: () => true,
+    report: () => {},
+  });
   const held: Wire = {
     sent,
     frames,
@@ -355,6 +361,16 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
       refresh: () => true,
     },
     say(message) {
+      // **A record lands in its store through the transport's own rule**, so a
+      // test drives the page through the same version and gap logic a live
+      // one reads, rather than a placement the double invented, and then
+      // every listener hears the frame.
+      if (message.kind === 'snapshot') {
+        streams.snapshot(message.subject, message.version, message.data);
+      }
+      if (message.kind === 'patch') {
+        streams.patch(message.subject, message.version, message.data);
+      }
       for (const fn of listeners) fn(message);
     },
     hold(slot, ...updates) {

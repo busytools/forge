@@ -1878,14 +1878,23 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
         updates: [],
         state: { kind: 'ready' },
         dropped: 0,
+        version: null,
+        unexpected: [],
       }),
       snapshot: () => snapshot.get(key) ?? null,
       updates: () => [],
       state: seatState,
       dropped: () => 0,
+      version: () => null,
+      unexpected: () => [],
       set: (next: unknown) => {
         snapshot.set(key, next);
       },
+      applied: (_version: number | null, next: unknown) => {
+        snapshot.set(key, next);
+      },
+      gap: () => {},
+      unplaced: () => {},
       push: () => {},
       compact: () => {},
       compacted: () => false,
@@ -2076,6 +2085,11 @@ function snapshotOf(
 /** One update, as the server sends it. */
 function updateOf(update: SessionUpdate): ServerMessage {
   return { kind: 'update', update };
+}
+
+/** One seat patch, as the socket delivers the server's whole-field delta. */
+function patchOf(slot: SessionSlot, data: Record<string, unknown>): ServerMessage {
+  return { kind: 'patch', subject: { session: slot }, data };
 }
 
 /** One numbered frame, as the server sends a seat's: the number minted for
@@ -2703,79 +2717,64 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
-   * **A machine turn ending is re-read, and one beginning is not.**
-   *
-   * The core's abort says only "not a handoff" - a CLI compaction that was
-   * running under the handoff is still running, and only the record folds
-   * both sources into the one `machine`. The begin needs no read: the frame
-   * carries all of it.
+   * **A machine turn's ending is the record's to state, and it arrives as a
+   * patch.** The core's abort says only "not a handoff" - a CLI compaction
+   * that was running under the handoff is still running - so the frame is not
+   * the answer; the server folds both sources and patches the composer.
    */
-  it('re-reads the seat when a machine turn ends, and not when one begins', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD));
-
-    const began = page.reads();
-    page.land(updateOf({ machine_turn: { key: LEAD, machine: 'handoff' } }));
-    expect(page.reads(), 'a handoff beginning carries everything the page needs').toBe(began);
-
-    page.land(updateOf({ machine_turn: { key: LEAD, machine: null } }));
-    expect(page.reads(), 'the machine turn ending is the record to state').toBe(began + 1);
-    page.stop();
-  });
-
-  /**
-   * **An end frame asks for nothing when no machine turn was held.** A session
-   * death sends the same `null` to every seat it reaches, and a record encode
-   * is the heaviest read on the wire: a page with nothing to correct pays
-   * 6.5 MB for it.
-   */
-  it('does not re-read on a machine turn ending it never held', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD));
-
-    const asked = page.reads();
-    page.land(updateOf({ machine_turn: { key: LEAD, machine: null } }));
-    expect(page.reads(), 'nothing was held to correct').toBe(asked);
-    page.stop();
-  });
-
-  /**
-   * **A review touched on the seat re-reads it.** Reviews ride the record
-   * rather than a frame - the notice carries no field the record has - so the
-   * notice is the one cue to take the read again. The reviewer's own writes
-   * re-read themselves, but a worker's answer arrives only this way (#1776),
-   * and without it the strip's rows and its panel keep saying `open` at
-   * threads just settled.
-   */
-  it('re-reads the seat when a review was touched', () => {
+  it('draws the machine turn a patch carries, and asks no read', () => {
     const connection = drivable();
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
     const asked = page.reads();
 
     page.land(
-      updateOf({
-        review_activity_notice: {
-          key: LEAD,
-          branch: 'feat',
-          waiting: 2,
-          message: 'a worker addressed review #4',
-        },
+      patchOf(LEAD, {
+        composer: { machine: 'compacting', bind: 'hold', mode: 'toggle', notice: null },
       }),
     );
-
-    expect(page.reads(), 'the review notice was never re-read').toBe(asked + 1);
+    paint();
+    expect(page.reads(), 'a machine turn patch asked for a read').toBe(asked);
+    expect(page.read().wire?.composer.machine, 'the patch did not land on the record').toBe(
+      'compacting',
+    );
     page.stop();
   });
 
   /**
-   * **The notice's own number is counted like any other frame's.** The cue
-   * it carries is a re-read, not a stop: a branch that returned there would
-   * leave the number unminted, and the frame behind it - the successor of a
-   * number the record never took - would read as a hole and hold every later
-   * frame behind a repair ask for a notice that needed none.
+   * **A review touched on the seat arrives as a patch.** Reviews ride the
+   * record rather than a frame - the notice carries no field the record has -
+   * so the server re-reads its own record and patches the review rows.
+   */
+  it('draws the reviews a patch carries, and asks no read', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const asked = page.reads();
+
+    page.land(
+      patchOf(LEAD, {
+        reviews: {
+          threads: { outcome: 'read', value: [] },
+          reviews: { outcome: 'read', value: [] },
+        },
+      }),
+    );
+    paint();
+
+    expect(page.reads(), 'a review patch asked for a read').toBe(asked);
+    expect(page.read().wire?.reviews.reviews.outcome, 'the patch did not land on the record').toBe(
+      'read',
+    );
+    page.stop();
+  });
+
+  /**
+   * **The notice's own number is counted like any other frame's.** It is a
+   * frame in the seat's stream, so a branch that returned there would leave
+   * the number unminted, and the frame behind it - the successor of a number
+   * the record never took - would read as a hole and hold every later frame
+   * behind a repair ask for a notice that needed none.
    */
   it('counts a review notice in the seat numbering', () => {
     const connection = drivable();
@@ -2796,7 +2795,7 @@ describe('the record a page holds over an update stream', () => {
         1,
       ),
     );
-    expect(connection.reads(), 'the notice never asked for the re-read').toBe(asked + 1);
+    expect(connection.reads(), 'the notice asked for a read').toBe(asked);
 
     // The frame behind it is its successor: no hole, nothing held.
     page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('after') } }, 2));
@@ -2928,6 +2927,44 @@ describe('the record a page holds over an update stream', () => {
     second.stop();
     expect(connection.unsubscribes(), 'a healthy seat was given back on leave').toBe(1);
     expect(connection.subscribes(), 'the second visit never re-opened the seat').toBe(2);
+  });
+
+  /**
+   * **What only the store knows is drawn too.** A patch this client cannot
+   * place is held there, and a skipped version marks the store resyncing;
+   * neither rides a frame, and a seat that repainted only on frames and
+   * answers left both silently undrawn (rule 25).
+   */
+  it('draws the patches it could not place, and says it is catching up', () => {
+    const { connection, held } = stored();
+    const page = watch(connection);
+    const store = held.get({ session: LEAD });
+    expect(store, 'the seat opened no store').toBeDefined();
+    if (store === undefined) return;
+
+    const seeded = {
+      slot: LEAD,
+      state: { scan_cwd: '/tmp' },
+      header: { session_id: null, seq: 1 },
+    };
+    const answer: ServerMessage = { kind: 'snapshot', subject: { session: LEAD }, data: seeded };
+
+    store.set(seeded);
+    page.land(answer);
+    expect(page.read().heldPatches ?? [], 'a clean read held something').toHaveLength(0);
+
+    store.gap('a skipped version');
+    expect(page.read().resyncing, 'the gap was not drawn').toBe(true);
+
+    store.unplaced({ state: 'unreadable' });
+    expect(page.read().heldPatches, 'the held patch was not drawn').toHaveLength(1);
+
+    // The whole read the gap asked for answers: current, and holding nothing.
+    store.set(seeded);
+    page.land(answer);
+    expect(page.read().resyncing, 'the answer did not draw as current').toBe(false);
+    expect(page.read().heldPatches ?? [], 'the answer kept a held patch').toHaveLength(0);
+    page.stop();
   });
 
   /**
@@ -4998,58 +5035,6 @@ describe('the review read', () => {
     rereadSeat(connection, LEAD, { review: false });
     connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 3 }));
     expect(seen.read?.review, 'and the ordinary answer after it is not').toBe(false);
-    stop();
-  });
-
-  /**
-   * **A want is served as the read that was wanted.** A notice read landing
-   * behind one in flight must not become another fetch: the seat's intent is
-   * untouched by a one-shot request, and the want remembers it.
-   */
-  it('serves a want as the read that was wanted', () => {
-    const connection = drivable();
-    const view = watchSession(connection, LEAD, true, { review: true });
-    const stop = view.subscribe(() => {});
-    // The open's answer is in flight; a notice wants the record meanwhile.
-    connection.land(
-      updateOf({
-        review_activity_notice: { key: LEAD, branch: 'b', waiting: 1, message: 'x' },
-      }),
-    );
-    expect(connection.refreshes, 'nothing is asked behind the ask in flight').toEqual([]);
-
-    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
-    expect(connection.refreshes, 'the want is served as the ordinary read it was').toEqual([
-      { review: false },
-    ]);
-    stop();
-  });
-
-  /**
-   * **A notice's ordinary want does not spend the page's review want.** The
-   * page's own re-ask latched while one was in flight is the read it needs;
-   * a notice landing behind it wants the record too, and one review read
-   * serves both. Served as an ordinary read, the page would draw a record its
-   * own scope did not produce and its base line would stay hidden until the
-   * next move.
-   */
-  it('keeps a latched review want when a notice wants the record too', () => {
-    const connection = drivable();
-    const view = watchSession(connection, LEAD, true, { review: true });
-    const stop = view.subscribe(() => {});
-
-    // The page wants its own read while the open's answer is in flight.
-    rereadSeat(connection, LEAD, { review: true });
-    // A notice wants the record behind it.
-    connection.land(
-      updateOf({
-        review_activity_notice: { key: LEAD, branch: 'b', waiting: 1, message: 'x' },
-      }),
-    );
-    expect(connection.refreshes, 'nothing is asked behind the ask in flight').toEqual([]);
-
-    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
-    expect(connection.refreshes, 'the review read is the one asked').toEqual([{ review: true }]);
     stop();
   });
 

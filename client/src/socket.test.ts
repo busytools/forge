@@ -2423,3 +2423,136 @@ describe('the liveness probe', () => {
     connection.close();
   });
 });
+
+/**
+ * The versioned delta stream: a subscribe answer is the base, each patch is
+ * the next number, and anything else is a gap answered by one whole read.
+ */
+describe('the versioned stream', () => {
+  /** One home record, as a subscribe answer carries it. */
+  function home(data: Record<string, unknown> = {}) {
+    return { projects: [], agents: [], fleet: [], unseen: [], ...data };
+  }
+
+  it('applies a patch numbered as the next version, and asks nothing', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    server.send({ kind: 'snapshot', subject: HOME, version: 1, data: home() });
+    await until(() => conn.store(HOME)?.state().kind === 'ready', 'the whole read');
+
+    server.send({ kind: 'patch', subject: HOME, version: 2, data: { unseen: ['a'] } });
+    await until(
+      () =>
+        (conn.store(HOME)?.snapshot() as { unseen?: unknown[] } | undefined)?.unseen?.length === 1,
+      'the patch to apply',
+    );
+    expect(conn.store(HOME)?.version(), 'the record did not advance').toBe(2);
+    expect(conn.store(HOME)?.unexpected()).toEqual([]);
+    expect(
+      server.received.filter((message) => message.kind === 'subscribe'),
+      'a patch bought a whole read',
+    ).toHaveLength(1);
+  });
+
+  /**
+   * **A skipped number is a gap, and a gap costs one whole read.** The store
+   * keeps the record it holds, says it is catching up, and asks once - a
+   * second gap while that read is in flight rides the same ask rather than
+   * stacking another.
+   */
+  it('asks for one whole read on a gap, and does not stack them', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    server.send({ kind: 'snapshot', subject: HOME, version: 1, data: home() });
+    await until(() => conn.store(HOME)?.state().kind === 'ready', 'the whole read');
+
+    // Version 3 over 1: number 2 went missing.
+    server.send({ kind: 'patch', subject: HOME, version: 3, data: { unseen: ['a'] } });
+    await until(
+      () => server.received.filter((message) => message.kind === 'subscribe').length === 2,
+      'the one re-ask',
+    );
+    expect(conn.store(HOME)?.state().kind, 'the store does not say it is catching up').toBe(
+      'resyncing',
+    );
+    expect(conn.store(HOME)?.unexpected(), 'the gap patch was dropped').toHaveLength(1);
+
+    // A second gap while the read is in flight: no second ask.
+    server.send({ kind: 'patch', subject: HOME, version: 5, data: { unseen: ['b'] } });
+    await until(() => conn.store(HOME)?.unexpected().length === 2, 'the second gap held');
+    expect(
+      server.received.filter((message) => message.kind === 'subscribe'),
+      'the second gap stacked another read',
+    ).toHaveLength(2);
+
+    // The read lands and clears the catching-up state.
+    server.send({ kind: 'snapshot', subject: HOME, version: 5, data: home() });
+    await until(() => conn.store(HOME)?.state().kind === 'ready', 'the resync to settle');
+    expect(conn.store(HOME)?.unexpected(), 'the read did not clear the held patches').toEqual([]);
+  });
+
+  /** **A patch before any read is a bug on one side or the other**: it is
+   * held for a page to draw, and one whole read is asked for. */
+  it('holds a patch that arrives before any read, and asks once', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+
+    server.send({ kind: 'patch', subject: HOME, version: 1, data: { unseen: ['a'] } });
+    await until(
+      () => server.received.filter((message) => message.kind === 'subscribe').length === 2,
+      'the whole read the patch asked for',
+    );
+    expect(conn.store(HOME)?.unexpected(), 'the unplaced patch was dropped').toHaveLength(1);
+    expect(conn.store(HOME)?.state().kind).toBe('resyncing');
+  });
+
+  /** **A seat's patch carries no number**, because the seat's stream is
+   * numbered by its own frames; it applies whole fields as it arrives. */
+  it('applies an unversioned seat patch', async () => {
+    const { server, conn } = await connected();
+    const seat: Subject = { session: { org: 'TestOrg', project: 'proj', label: 'lead' } };
+    conn.subscribe(seat);
+    await until(() => server.received.length === 1, 'the seat subscribe');
+    server.send({
+      kind: 'snapshot',
+      subject: seat,
+      data: { slot: seat.session, composer: { machine: null, bind: 'hold', mode: 'toggle' } },
+    });
+    await until(() => conn.store(seat)?.state().kind === 'ready', 'the seat read');
+
+    server.send({
+      kind: 'patch',
+      subject: seat,
+      data: { composer: { machine: 'compacting', bind: 'hold', mode: 'toggle' } },
+    });
+    await until(
+      () =>
+        (conn.store(seat)?.snapshot() as { composer?: { machine?: string } } | undefined)?.composer
+          ?.machine === 'compacting',
+      'the seat patch to apply',
+    );
+    expect(
+      server.received.filter((message) => message.kind === 'subscribe'),
+      'a seat patch asked for a read',
+    ).toHaveLength(1);
+  });
+
+  /** A record patch with no number has no place in the stream: same gap. */
+  it('asks once for an unversioned record patch', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    server.send({ kind: 'snapshot', subject: HOME, version: 1, data: home() });
+    await until(() => conn.store(HOME)?.state().kind === 'ready', 'the whole read');
+
+    server.send({ kind: 'patch', subject: HOME, data: { unseen: ['a'] } });
+    await until(
+      () => server.received.filter((message) => message.kind === 'subscribe').length === 2,
+      'the read an unnumbered patch asks for',
+    );
+    expect(conn.store(HOME)?.unexpected()).toHaveLength(1);
+  });
+});

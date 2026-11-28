@@ -15,16 +15,29 @@ It is reached from two doors: `open board` on the project's row on the
 return the reader where they came from, and a deep link with nothing to go
 back to lands on the home.
 
-The page draws from the `board` subject, which carries only the window's
-fields: a row's worked time, its ages, whether its owner is live, its
-marks, its wait, its rollup and its epic's subject. The row's `detail`
-brief and its transition history are **not** in that read - they load on
-demand through the `task_detail` command when a drawer opens, and come back
-as a `task_detail` update for that one row - so a board read is bounded by
-its row count rather than by how much each row has accumulated. The closed
-view is its own subject, `archived`, read once each time the toggle opens.
-The seat chips and the fleet's `waiting on you` count come from the home
-snapshot beside it; the row and running counts are the board's own.
+The page draws from the `board` subject: a project's rows, schedules and
+connector sets ride in that subject's record, and the server patches the
+record when they move. So a seat that claims a row, a row that is cut, or a
+move made in another view arrives as a patch, and the page redraws without
+the reader doing anything. The record carries only the window's fields: a
+row's worked time, its ages, whether its owner is live, its marks, its wait,
+its rollup and its epic's subject. The row's `detail` brief and its transition
+history are **not** in that read - they load on demand through the
+`task_detail` command when a drawer opens, and come back as a `task_detail`
+update for that one row - so a board read is bounded by its row count rather
+than by how much each row has accumulated. The closed view is its own
+subject, `archived`, read once each time the toggle opens. The seat chips and
+the fleet's `waiting on you` count come from the home snapshot beside it; the
+row and running counts are the board's own.
+
+**There is no beat.** A row's ages and time-derived marks are computed at
+draw time from the row's own timestamps and the instant the record landed
+(`client/src/board/clock.ts`), so a watched board ticks every five seconds
+without a read: the `wrote ... ago` line, the card's worked time, and the
+chip and waiting-card ages all move together. A page nobody is watching asks
+nothing; the record and its frames were kept while it was away, and a return
+draws them and then asks once for what the hide made stale, through the same
+page guards every read uses.
 
 The header has its own rhythm: the breadcrumb (`back` and the project's
 name) shares one line and one baseline with the seat chips and `done`, the
@@ -347,7 +360,9 @@ refused edit says so on the service line rather than silently reverting.
   lands; the page says it is reading, and a subscription the server turns
   down says so in its own words instead of reading forever.
 - **Unknown**: a project the snapshot does not carry draws its name and one
-  line saying this forge does not hold it, with no regions and no create line.
+  line saying this forge does not hold it, with no regions or lanes, and no
+  create line - a row filed there would name a project `forge.toml` has no
+  entry for.
 - **Empty**: a project with no live rows draws the window's all-clear as a
   claim with its evidence - when the board was checked, how many agents
   ran, what was sampled and the delta since the last look - and its four
@@ -356,6 +371,16 @@ refused edit says so on the service line rather than silently reverting.
   attention fields says `nothing is waiting on you` plainly rather than
   inventing evidence.
 - **The archive reading, refused, or empty**: the toggle says which.
+- **A set of seats**: the seat chips draw only when the project holds one; a
+  project with nothing running draws none.
+- **Catching up**: a version gap keeps the record on screen and draws a
+  `catching up` phrase in the header while one whole read lands, so the
+  figures are never silently stale.
+- **Held updates**: a frame this client cannot place is counted as `N held`
+  in the header, never dropped (rule 25).
+- **A record this client could not read**: the page says so in the fleet's
+  place rather than drawing an empty board, which would read as a project
+  with no rows.
 
 ## Motion
 

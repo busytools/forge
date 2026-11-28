@@ -30,6 +30,7 @@
   import TaskDrawer from './TaskDrawer.svelte';
   import Window from './Window.svelte';
   import type { BoardFieldHandle, BoardVoice } from './voice';
+  import { agedBoard } from './clock';
   import { applyMoves, boardView, DISPOSITIONS, landed } from './view';
   import type { BoardCardView, LaneView, PendingMove, WaitingView } from './view';
   import { clockOf, windowView } from './window';
@@ -260,7 +261,12 @@
 
   // An empty board before the read lands: the lanes draw nothing, and the
   // markup says which state it is in rather than calling the project unknown.
-  const view = $derived(boardView(wire, board.wire ?? { projects: [] }, org, project, nowSecs));
+  // The rows advance from the instant the server encoded them to the page's
+  // own clock, so worked time and the time marks move without a read.
+  const aged = $derived(
+    agedBoard(board.wire ?? { projects: [] }, nowSecs * 1000, board.readAt ?? nowSecs * 1000),
+  );
+  const view = $derived(boardView(wire, aged, org, project, nowSecs));
   /**
    * The reader's own drags, applied at once and reconciled against the
    * wire: a card that waits seconds for the server's snapshot reads as a
@@ -480,9 +486,7 @@
   /** The window's own derivation: needs, exceptions, live, next. Not named
    *  `window`: that is the global the pop's history and the drop's motion
    *  read. */
-  const windowed = $derived(
-    windowView(wire, board.wire ?? { projects: [] }, org, project, nowSecs),
-  );
+  const windowed = $derived(windowView(wire, aged, org, project, nowSecs));
 
   /**
    * **The last look is stamped when the person leaves the window**, never
@@ -869,8 +873,14 @@
        share the top baseline, and the totals sit under it. -->
   <p class="b-counts">
     {#if board.wire === null}
-      {board.refused === null ? 'reading the board...' : 'no board'}
+      {board.failed ?? (board.refused === null ? 'reading the board...' : 'no board')}
     {:else}
+      <!-- The read's own state leads the totals: a held patch and a
+           catch-up are why a number may lag. -->
+      {#if (board.heldPatches ?? []).length > 0}
+        {board.heldPatches?.length} held &middot;
+      {/if}
+      {#if board.resyncing}catching up &middot;{/if}
       {#if view.read.onYou > 0}<b>{view.read.onYou} waiting on you</b>{/if}
       <span class="b-read-counts">{view.read.rows} rows &middot; {view.read.running} running</span>
     {/if}

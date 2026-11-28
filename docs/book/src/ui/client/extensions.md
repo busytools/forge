@@ -83,6 +83,9 @@ because of a query.
 ## The states the page can be in
 
 - **The ordinary case**: a full inventory, nothing stale, no band.
+- **Catching up, or updates held**: a version gap draws
+  `Catching up with the server...` above the page while one whole read lands,
+  and a frame this client cannot place is counted there as kept (rule 25).
 - **An update waiting**: the band names the pairs, the Installed rail item
   wears a triangle, and every stale row carries its own Update.
 - **A run in flight**: the band carries the spinner and `n of m done`, and
