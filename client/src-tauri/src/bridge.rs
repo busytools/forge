@@ -50,9 +50,7 @@
               desktop keeps the one async shape the picker awaits"
 )]
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::Hasher;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -221,14 +219,6 @@ struct State {
     /// subject again - the home encode walks every project's working tree, on
     /// the platform this cut exists for.
     refreshed: HashMap<String, Instant>,
-    /// The last `tasks_changed` set announced per project, as a digest: the
-    /// page's own coalescing key (#2540), so an unchanged set asks for no
-    /// roster read.
-    last_tasks: HashMap<String, u64>,
-    /// A board change landed while a home read was already on the wire: the
-    /// snapshot may predate it, so the roster is asked for again when that
-    /// read lands (the page's own stale flag, #2540).
-    home_stale: bool,
     /// The takeover's live viewer, re-attached on every reconnect while it
     /// is set; a lower clears it.
     attach: Option<Attach>,
@@ -357,8 +347,6 @@ impl Bridge {
                 refreshing: HashSet::new(),
                 behind: HashSet::new(),
                 refreshed: HashMap::new(),
-                last_tasks: HashMap::new(),
-                home_stale: false,
                 attach: None,
                 attach_generation: 0,
                 view_profile: None,
@@ -840,7 +828,6 @@ impl Bridge {
             state.last_beat = Some(Instant::now());
             state.suppressed = 0;
             state.refreshing.clear();
-            state.home_stale = false;
             let mut wanted = Vec::with_capacity(state.order.len());
             // The order is copied out so each watch can be marked carried:
             // `&state.order` and `state.held.get_mut` are one borrow apart.
@@ -1170,65 +1157,6 @@ impl Bridge {
         }
     }
 
-    /// One ask's own frame: read the roster again while the home is held.
-    ///
-    /// **Only a read moves the roster's pending field**, and the page's own
-    /// read is not a guarantee: its heartbeat is a page timer, and WebKit
-    /// stops it the instant the display sleeps. A beat newer than `FRESH_MS`
-    /// therefore says nothing about whether the page will read, so the
-    /// roster is always asked for here - one extra encode per ask is the
-    /// cost of not missing the ask that lands in that window. A view that is
-    /// not holding the home (a connect screen) asks nothing.
-    fn ask_arrived(&self, update: &Value) {
-        let ask = [
-            "permission_request",
-            "question_request",
-            "browser_hand_off_pending",
-            "document_hand_off_pending",
-            "settings_write_pending",
-            "vault_ask_pending",
-        ]
-        .iter()
-        .any(|key| update.get(*key).is_some());
-        if ask {
-            if self.lock().held.contains_key("home") {
-                // A roster refresh states no scope: the held declaration decides.
-                self.refresh(&json!("home"), None);
-            }
-            return;
-        }
-        self.board_moved(update);
-    }
-
-    /// A board change's door: the fleet row's waits ride the home snapshot, so
-    /// a task update that is never read would leave a raise unannounced while
-    /// the page is parked - the one state notifications exist for.
-    ///
-    /// **The page's own coalescing, not a read per frame**: an unchanged task
-    /// set is no news (#2540), and a read already out for the roster answers
-    /// the frame that arrived behind it only if it was ENCODED after the
-    /// write - which nothing guarantees, so a change that lands behind an
-    /// in-flight read marks the roster stale and it is asked for again when
-    /// that read lands. The digest is the project and its tasks, the key the
-    /// page keeps beside it.
-    fn board_moved(&self, update: &Value) {
-        let Some((project, digest)) = tasks_digest(update) else { return };
-        let mut state = self.lock();
-        if state.last_tasks.get(&project) == Some(&digest) {
-            return;
-        }
-        state.last_tasks.insert(project, digest);
-        if !state.held.contains_key("home") || state.socket.is_none() {
-            return;
-        }
-        if !state.refreshing.insert("home".to_owned()) {
-            state.home_stale = true;
-            return;
-        }
-        drop(state);
-        self.refresh(&json!("home"), None);
-    }
-
     /// What the page reads at the start and on every `Connection` notice.
     pub fn state(&self) -> Value {
         let state = self.lock();
@@ -1494,10 +1422,11 @@ impl Bridge {
     /// names them: replaying fifteen records at once folded 34 MB on the
     /// page's main thread while fourteen of those seats were not on screen.
     ///
-    /// A subject that is not a seat is ASKED FOR ANEW instead: its record
-    /// folds nothing on this side (the page's own home fold reads the
-    /// frames), so a copy of it here would be stale, while a re-subscribe
-    /// answers with the truth.
+    /// A subject that is not a seat is ASKED FOR ANEW instead: the home's
+    /// copy here serves the ask rule and is folded from patches as they
+    /// arrive, but the page reads the roster itself and a returning page has
+    /// missed patches, so the re-subscribe is what answers it with the
+    /// truth.
     ///
     /// **`skip_home_board` is a wake or a return, and their frames are already
     /// here.** The page's return re-read asks the home and the board through
@@ -1679,7 +1608,6 @@ impl Bridge {
                 state.last_beat = Some(Instant::now());
                 state.suppressed = 0;
                 state.refreshing.clear();
-                state.home_stale = false;
             }
             // A drop keeps the records: the reconnect's snapshots replace
             // them whole, and nothing else on this side has to move (a take
@@ -1784,19 +1712,6 @@ impl Bridge {
                     self.raise(notices);
                     let waits = self.waits_moved();
                     self.raise_waits(waits);
-                    // **A board change that landed behind this read is
-                    // re-asked**: the snapshot may have been encoded before
-                    // the write, and the digest already consumed the frame,
-                    // so nothing else would ask for the newer roster.
-                    let mut state = self.lock();
-                    if std::mem::take(&mut state.home_stale)
-                        && state.held.contains_key("home")
-                        && state.socket.is_some()
-                        && state.refreshing.insert("home".to_owned())
-                    {
-                        drop(state);
-                        self.refresh(&json!("home"), None);
-                    }
                 }
             }
             "patch" => {
@@ -1805,9 +1720,40 @@ impl Bridge {
                 // catch-up snapshot (built from that record) would revert the
                 // very fields the patch carried, and no later patch re-sends
                 // them. The page still sees the frame as itself.
+                //
+                // **The home roster is folded for the same reason, and read
+                // for the ask rule.** An ask and a task change both move the
+                // home record, and the server marks it for both (#3102), so
+                // the roster a parked page's raise reads stays current from
+                // the frames this half already forwards - no whole encode of
+                // it per ask and per task set.
                 let Some(subject) = message.get("subject") else { return };
                 let data = message.get("data").cloned().unwrap_or(Value::Null);
-                self.lock().records.patch(subject, &data);
+                let key = records::subject_key(subject);
+                let folded = self.lock().records.patch(subject, &data);
+                if key == "home" && folded {
+                    let notices = self.asks_moved();
+                    self.raise(notices);
+                    let waits = self.waits_moved();
+                    self.raise_waits(waits);
+                } else if key == "home" {
+                    // **A patch this build cannot place is a gap it must not
+                    // keep.** The page's own fold answers the same shape with
+                    // one whole read (`wire/patch.ts`), and the held roster is
+                    // the copy a parked page's raise reads, so it is asked for
+                    // again here too. **Once per gap from this half**: the mark
+                    // comes off with the read's answer, so a burst of
+                    // unreadable patches buys one whole encode rather than one
+                    // each. That promise is the parked page's, which asks for
+                    // none of its own; a page that is drawing asks its socket
+                    // for its own gap read beside this one.
+                    let mut state = self.lock();
+                    if state.held.contains_key("home") && state.refreshing.insert("home".to_owned())
+                    {
+                        drop(state);
+                        self.refresh(&json!("home"), None);
+                    }
+                }
                 self.forward(message, Some((bytes, parse_ms)));
             }
             "update" => {
@@ -1815,11 +1761,6 @@ impl Bridge {
                 let refresh = self.lock().records.apply(update);
                 self.forward(message, None);
                 self.acted(refresh);
-                // **An ask's own frame is the door to a read**, whether or
-                // not the page is awake to ask for one: the roster's pending
-                // field only moves when the home is read, and a parked page
-                // never reads.
-                self.ask_arrived(update);
             }
             // Consumed here alone, provably unusable by the page: a reply is
             // `dispatch`'s own answer, correlated by id in `socket.rs`.
@@ -2111,29 +2052,6 @@ impl Bridge {
 /// the obvious marks: a `prompt_queued` row is folded by the PAGE (the
 /// record's `state.queue` is only the snapshot's copy), so a park that ate
 /// it would lose the row from the pile a reader is looking at.
-/// The project a `tasks_changed` frame speaks for, and a digest of its set -
-/// the coalescing key the page keeps beside its own read (#2540).
-///
-/// The frame names its project in the update's key, or, on an older server,
-/// by the first row's `project_name`; a frame with neither names no project
-/// this side can compare, and asks for nothing.
-fn tasks_digest(update: &Value) -> Option<(String, u64)> {
-    let payload = update.get("tasks_changed")?;
-    let tasks = payload.get("tasks")?;
-    let rows = tasks.as_array()?;
-    let named = rows.first().and_then(|row| row.get("project_name")).and_then(Value::as_str);
-    let project = payload
-        .get("key")
-        .and_then(|key| key.get("project"))
-        .and_then(Value::as_str)
-        .or(named)
-        .filter(|name| !name.is_empty())?;
-    let encoded = serde_json::to_vec(tasks).ok()?;
-    let mut hasher = DefaultHasher::new();
-    hasher.write(&encoded);
-    Some((project.to_owned(), hasher.finish()))
-}
-
 fn rebuilt_by_records(message: &Value) -> bool {
     message.get("kind").and_then(Value::as_str) == Some("update")
         && message
@@ -2657,6 +2575,11 @@ mod tests {
         let mut message = json!({ "kind": "snapshot", "subject": "home" });
         message["data"] = data;
         message
+    }
+
+    /// One home patch, carrying `data` as the fields that moved.
+    fn home_patch(data: &Value) -> Value {
+        json!({ "kind": "patch", "subject": "home", "data": data })
     }
 
     /// One seat's row carrying an ask.
@@ -3473,15 +3396,16 @@ mod tests {
         assert_eq!(again["answering"], false, "with the declaration it was held under");
     }
 
-    /// **An ask's frame asks for the roster again even when the page looks
-    /// awake.** The heartbeat is a page timer and stops the instant the
-    /// display sleeps, so a beat inside `FRESH_MS` is not proof the page
-    /// will read; the ask that lands in that window would raise no banner.
-    /// An ordinary turn frame asks nothing.
+    /// **An ask frame is answered by the home patch, not by a whole roster
+    /// read.** The shell already forwards the delta stream (#3102), and the
+    /// server marks the home dirty for every ask, so the read here was a
+    /// second whole encode of a roster the patch had already moved. The
+    /// held copy must still take the row, or a parked page's banner never
+    /// raises.
     #[tokio::test]
-    async fn an_asks_frame_reads_the_home_whatever_the_beat_says() {
+    async fn an_ask_frame_issues_no_home_read_and_its_patch_raises_it() {
+        let (bridge, mut rx, recorded) = bridge_recording();
         let mut server = stub().await;
-        let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
         bridge.subscribe(json!("home"), true, false);
@@ -3490,18 +3414,9 @@ mod tests {
         // display slept - and the page is already frozen behind it.
         bridge.heartbeat(Some(true), None);
 
-        // The control: a turn frame is not an ask, so nothing is re-read.
-        sent(
-            &bridge,
-            json!({
-                "kind": "update",
-                "update": { "turn_complete": { "key": seat()["session"], "terminal_reason": null } },
-            }),
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
-            "an ordinary frame asks for no read",
-        );
+        // The launch's own read seeds and announces nothing.
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        assert!(recorded.take().is_empty(), "launch is not news");
 
         sent(
             &bridge,
@@ -3516,134 +3431,148 @@ mod tests {
                 },
             }),
         );
-        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
-        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(again["what"], json!("home"), "the ask reads the roster inside the beat");
-        assert_eq!(again["answering"], true, "with the declaration the home is held under");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the ask frame asks for no whole roster read",
+        );
+
+        sent(
+            &bridge,
+            home_patch(&json!({
+                "agents": [{
+                    "op": "set",
+                    "id": slot(),
+                    "record": {
+                        "slot": slot(),
+                        "pending": "permission",
+                        "pending_depth": 1,
+                        "pending_seq": 1,
+                    },
+                }],
+            })),
+        );
+        assert_eq!(
+            recorded.take(),
+            vec![(SessionSlot::lead("Busytools", "forge"), crate::asks::AskKind::Permission)],
+            "the patch the shell forwarded moved the held roster, and the ask is raised",
+        );
+        // Rule 25: the page still sees the frame itself.
+        let ClientEvent::Inbound(seen) = event(&mut rx, is_inbound_kind("patch")).await else {
+            unreachable!("filtered to a patch");
+        };
+        assert_eq!(seen["subject"], json!("home"), "the page draws the home patch as itself");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the folded patch issues no whole roster read",
+        );
     }
 
-    /// **A board change is the wait's door too.** The fleet row's waits ride
-    /// the home snapshot, so a `tasks_changed` frame asks for the roster even
-    /// when the page looks awake - a raise that landed in the beat's window
-    /// would otherwise raise no banner.
+    /// **A home patch this build cannot place is answered with one whole
+    /// read**, the way the page's own fold answers the same shape: the held
+    /// roster must not stand a field behind everything a newer server writes.
+    /// **One read per gap**: a second unreadable patch behind the first waits
+    /// for its answer rather than buying a whole encode each.
     #[tokio::test]
-    async fn a_tasks_changed_frame_reads_the_home_whatever_the_beat_says() {
+    async fn an_unreadable_home_patch_asks_for_one_whole_read() {
         let mut server = stub().await;
         let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+
+        let unreadable = || home_patch(&json!({ "agents": [{ "op": "weird", "id": slot() }] }));
+        sent(&bridge, unreadable());
+        sent(&bridge, unreadable());
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], json!("home"), "the patch that could not be folded is re-read");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the second unreadable patch waited for the read it already had",
+        );
+
+        // **The answer takes the mark off.** A gap after it is a fresh read,
+        // which is what proves the coalescing cannot strand its mark.
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        sent(&bridge, unreadable());
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let third = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(third["what"], json!("home"), "the gap after the answer is read anew");
+    }
+
+    /// **A screen holding no home reads nothing.** The connect screen has no
+    /// roster behind it, so an unplaceable home patch there must put no read
+    /// on the wire: the shell would otherwise subscribe a subject the view
+    /// never asked for.
+    #[tokio::test]
+    async fn an_unreadable_home_patch_on_a_screen_holding_no_home_reads_nothing() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        // **The control**: this bridge does put frames on the wire, so the
+        // silence below is the home guard's and not a dead connection.
+        bridge.subscribe(seat(), false, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        sent(&bridge, home_patch(&json!({ "agents": [{ "op": "weird", "id": slot() }] })));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "a screen holding no home asks for no read",
+        );
+    }
+
+    /// **A task change is the wait's door, and its patch is the door.**
+    /// `tasks_changed` marks the home too, so the fleet row's waits arrive in
+    /// a home patch - a whole roster read per task set was the second encode
+    /// this deletes. The held copy must still take the fleet row.
+    #[tokio::test]
+    async fn a_task_change_issues_no_home_read_and_its_patch_raises_the_wait() {
+        let (bridge, _rx, recorded) = bridge_recording();
+        let mut server = stub().await;
         bridge.connect(server.url.clone());
         connected(&bridge).await;
         bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         bridge.heartbeat(Some(true), None);
 
-        sent(
-            &bridge,
-            json!({
-                "kind": "update",
-                "update": { "tasks_changed": { "key": { "project": "forge" }, "tasks": [] } },
-            }),
-        );
-        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
-        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(
-            again["what"],
-            json!("home"),
-            "the board change reads the roster inside the beat"
-        );
+        sent(&bridge, home_snapshot(waiting_home(&json!([]))));
+        assert!(recorded.waits().is_empty(), "launch is not news");
 
-        // The read answered, and the same set announced again is no news
-        // (#2540): a read per frame is the loop the page already coalesces.
-        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
-        sent(
-            &bridge,
-            json!({
-                "kind": "update",
-                "update": { "tasks_changed": { "key": { "project": "forge" }, "tasks": [] } },
-            }),
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
-            "an unchanged task set asks for no second read",
-        );
-        // A changed set is a read.
-        sent(
-            &bridge,
-            json!({
-                "kind": "update",
-                "update": {
-                    "tasks_changed": {
-                        "key": { "project": "forge" },
-                        "tasks": [{ "id": "t-1", "project_name": "forge" }],
-                    },
-                },
-            }),
-        );
-        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
-        let changed = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(changed["what"], json!("home"), "a changed set reads the roster");
-    }
-
-    /// **A board change that lands behind an in-flight read is not lost.**
-    /// The read on the wire may have been encoded before the write, and the
-    /// frame's digest is already consumed - so the shell marks the roster
-    /// stale and asks again when the first snapshot lands, which is the case
-    /// the parked page's notification depends on.
-    #[tokio::test]
-    async fn a_board_change_behind_a_read_asks_again_when_it_lands() {
-        let mut server = stub().await;
-        let (bridge, _rx) = bridge();
-        bridge.connect(server.url.clone());
-        connected(&bridge).await;
-        bridge.subscribe(json!("home"), true, false);
-        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
-
-        // The first change starts a read.
-        sent(&bridge, board_frame("forge", &json!([])));
-        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
-        let first = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(first["what"], json!("home"), "the board change reads");
-
-        // A second change lands while that read is out: no second ask yet.
         sent(&bridge, board_frame("forge", &json!([{ "id": "t-1", "project_name": "forge" }])));
         assert!(
             tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
-            "a read is already out",
+            "the task change asks for no whole roster read",
         );
-
-        // The read lands, and the stale roster is asked for again.
-        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
-        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
-        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(again["what"], json!("home"), "the change behind the read is re-asked");
-    }
-
-    /// **A screen holding no home reads nothing for an ask.** The connect
-    /// screen has no roster behind it, so an ask frame there must put no
-    /// read on the wire - dropping the held-home guard would subscribe a
-    /// subject the view never asked for.
-    #[tokio::test]
-    async fn an_asks_frame_on_a_screen_holding_no_home_reads_nothing() {
-        let mut server = stub().await;
-        let (bridge, _rx) = bridge();
-        bridge.connect(server.url.clone());
-        connected(&bridge).await;
 
         sent(
             &bridge,
-            json!({
-                "kind": "update",
-                "update": {
-                    "permission_request": {
-                        "key": seat()["session"],
-                        "tool_id": "tu-1",
-                        "request": {},
-                    }
-                },
-            }),
+            home_patch(&json!({
+                "fleet": [{
+                    "op": "set",
+                    "id": "forge",
+                    "record": {
+                        "project": "forge",
+                        "attention": [wait("t1", "lead", "sign this off")],
+                    },
+                }],
+            })),
+        );
+        assert_eq!(
+            recorded.waits(),
+            vec![crate::asks::WaitNotice {
+                slot: SessionSlot::lead("Busytools", "forge"),
+                task: "t1".to_owned(),
+                words: "sign this off".to_owned(),
+                more: 0,
+            }],
+            "the fleet row the patch carried raised its decision wait",
         );
         assert!(
             tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
-            "a screen holding no home asks for no read",
+            "the folded patch issues no whole roster read",
         );
     }
 
