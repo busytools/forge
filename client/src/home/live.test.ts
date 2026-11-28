@@ -8,7 +8,7 @@ import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { railFooter } from '../session/view';
 import { homeWire } from '../dev/fixture.data';
-import { watchHome, type HomeRead } from './live';
+import { rereadHome, watchHome, type HomeRead } from './live';
 import { homeView } from './view';
 
 const HOME: Subject = 'home';
@@ -263,6 +263,31 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+/**
+ * **A return asks one read at a time, and asks again once the answer lands
+ * - even when the answer found nothing moved.** The guard exists to stop a
+ * second whole encode queueing behind one already on its way; latching it
+ * on a version change means a return that found nothing would silence every
+ * later return.
+ */
+it('asks a return read once, and again after an unchanged answer', () => {
+  const forge = fakeConnection();
+  const stop = watchHome(forge.connection).subscribe(() => {});
+  answer(forge, idleHome());
+  forge.refreshed.length = 0;
+
+  rereadHome(forge.connection);
+  rereadHome(forge.connection);
+  expect(forge.refreshed, 'a second return queued behind the first').toEqual(['home']);
+
+  // The answer lands with the same record and the same version: the guard
+  // must still release on the write.
+  answer(forge, idleHome());
+  rereadHome(forge.connection);
+  expect(forge.refreshed, 'an unchanged answer latched the guard').toEqual(['home', 'home']);
+  stop();
 });
 
 describe('the home over a connection', () => {

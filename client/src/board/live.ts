@@ -168,6 +168,11 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     });
     stopStore = held.value.subscribe(() => {
       if (held === null) return;
+      // **Any store write answers a return's ask, even an unchanged record.**
+      // The write fires whether the read found anything moved or not, so the
+      // guard releases here rather than on a version change - a return that
+      // found nothing must not latch the guard against every later return.
+      reading = false;
       const snapshot = held.snapshot();
       const version = held.version();
       const state = held.state().kind;
@@ -182,8 +187,6 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       ) {
         return;
       }
-      // A record that moved is the answer a return's ask was waiting on.
-      if (version !== seenVersion) reading = false;
       seenSnapshot = snapshot;
       seenVersion = version;
       seenState = state;

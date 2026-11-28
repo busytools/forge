@@ -8,7 +8,7 @@ import { Stores } from '../stores';
 import type { BoardRead } from '../wire/board';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import { watchBoard } from './live';
+import { rereadBoard, watchBoard } from './live';
 
 const BOARD: Subject = 'board';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -135,6 +135,30 @@ afterEach(() => {
 });
 
 describe('the board over a connection', () => {
+  /**
+   * **A return asks one read at a time, and asks again once the answer lands
+   * - even when the answer found nothing moved.** Latching the guard on a
+   * version change would silence every return after one that found the board
+   * unchanged.
+   */
+  it('asks a return read once, and again after an unchanged answer', () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    forge.stores.get(BOARD)?.set(boardWire(), 1);
+    forge.refreshed.length = 0;
+
+    rereadBoard(forge.connection);
+    rereadBoard(forge.connection);
+    expect(forge.refreshed, 'a second return queued behind the first').toEqual([BOARD]);
+
+    // The answer lands with the same record and the same version: the guard
+    // must still release on the write.
+    forge.stores.get(BOARD)?.set(boardWire(), 1);
+    rereadBoard(forge.connection);
+    expect(forge.refreshed, 'an unchanged answer latched the guard').toEqual([BOARD, BOARD]);
+    stop();
+  });
+
   it('subscribes once, shared by every reader of the board store', () => {
     const forge = fakeConnection();
     const first = watchBoard(forge.connection);
