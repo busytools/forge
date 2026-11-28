@@ -57,8 +57,14 @@ or headings to fill in. Whatever shape reads best, it has to carry:
 
 - where things stand: what is done and verified, what is in flight, what is unchanged.
 - what is in flight, with the id that names it: the board row, PR, branch or session.
+- the decisions still governing the work, and why - at most five, one line each; the reasons
+  that would change what a successor does, not a log of everything considered.
 - what you tried that failed, and what stopped it.
-- the exact next action, and the file, command or row it starts at.
+- the exact next action, anchored: the repo root or worktree it starts in, the stable ids that
+  name the work (epic, board row, PR, branch), and the commit hash it is pinned to.
+
+Do not restate the branch, HEAD or any PID: when forge wrote a PART 1 it captured those at the
+swap, and a copy written earlier is the one that goes stale.
 
 Point at what you recorded rather than retelling it - the memory files by name, the board rows
 by id, the PR numbers, the transcript. Anything the session was expected to handle and could not
@@ -87,8 +93,8 @@ in the note with its id and where the successor picks it up:
 - every other live worker, from `agents__list`, by label and slot - a live worker takes
   `agents__send_message`; a failed one is the lead's to spawn again with `agents__spawn` and
   `resume_session: true`, reusing the charter `agents__list` reports; a restarting one is
-  already being healed, so wait for its next attempt; PART 1 carries the live workers, so point
-  at it rather than repeating them;
+  already being healed, so wait for its next attempt; PART 1 names `agents__list` rather than
+  printing them, so the successor queries the rest;
 - every subagent this session dispatched, by its task and where its transcript lives - a
   subagent cannot be resumed: the swap kills it. Name the task and transcript so the successor
   re-dispatches the work; when the transcript is gone, say so - there is nothing to re-dispatch
@@ -96,12 +102,12 @@ in the note with its id and where the successor picks it up:
 - every running background command or monitor, by the command and where its output goes - the
   swap stops it too, so name where it got to and how to restart it;
 - every live cron, from `cron__list`, by id and next fire - each fires on its own; PART 1
-  carries the live crons, so point at it rather than repeating them;
+  names `cron__list` rather than printing them, so the successor queries the rest;
 - every open board row this session owns or is still running, from `tasks__list`, by id and
   owner - a reserved row is the user's pick; a row the successor owns is its to continue, and a
   waiting one names what it waits on; an unowned pending row takes `tasks__claim`; an unowned
   row past pending is taken with `tasks__update`; a row another seat holds is that seat's to
-  move; PART 1 carries the project's open rows, so point at it rather than repeating them;
+  move; PART 1 names `tasks__list` rather than printing them, so the successor queries the rest;
 - every worktree this session created, from `git worktree list`, by path and branch - a worker
   successor cannot enter one, so name the path to read from or the move the successor can make.
 
@@ -112,12 +118,17 @@ how to restart it. When a subagent's transcript is gone, or a command's output i
 the successor cannot pick up where it stopped.
 
 **Verify before you wait.** A registry row can outlive its process. Check `agents__list` before
-the successor waits on any worker PART 1 names.
+the successor waits on any worker the note names.
 
 **Leave nothing unfinished unrecorded.** List what this session was expected to handle and could
 not finish in this turn - a blocked ask, a deferred fix, a call that was refused, a question left
 open - with the reason it stopped and where its context lives. The next session starts exactly
 where this one stopped; anything left out is lost when the turn ends.
+
+**Keep the note within the brief's limit.** Step 2's shape is the instruction; the guard against
+forge's trim is 400 words. Forge keeps at most 5,000 characters of the note and drops the tail,
+and the exact next action and the live children are written last, so a note over that limit
+loses exactly them.
 
 **Exit through the tool.** Forge takes the note as you wrote it - there are no headings to fill
 in, and your Step 2 document is the note. Write it where the seat section and Step 2 say, then

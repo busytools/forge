@@ -49,7 +49,8 @@ pub struct HandoffCycle {
 /// (a compaction firing first).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffSuccessor {
-    /// Turns counted before the measurement settled.
+    /// The turns counted when the measurement settled: the ten it is
+    /// measured over, or fewer when the successor was swapped out early.
     pub turns: u32,
     /// Files the successor read that its predecessor had already read.
     pub reread_files: u32,
@@ -107,7 +108,8 @@ pub struct HandoffRecord {
     pub at: String,
     #[serde(default)]
     pub cycle: HandoffCycle,
-    /// Absent until the successor has run its first ten turns.
+    /// Absent until the successor's first turns are measured: its ten, or the
+    /// ones it reached before it was swapped out early - `turns` says which.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub successor: Option<HandoffSuccessor>,
 }

@@ -2744,8 +2744,7 @@ impl Workspace {
 
     /// Whether this run's boot could not load the durable board. The
     /// in-memory set is empty while rows may be on disk, so a reader must
-    /// not report "none open" for a board it could not read - the handoff
-    /// brief says "not read" instead.
+    /// not report "none open" for a board it could not read.
     pub fn durable_tasks_unavailable(&self) -> bool {
         self.tasks_load_failed.load(std::sync::atomic::Ordering::Relaxed)
     }

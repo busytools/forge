@@ -435,9 +435,11 @@ impl SessionTask {
                     // A successor that is replaced before its ten turns is
                     // no longer the session the handoff wrote for. A
                     // reconnect of that same occupant keeps the watch: the
-                    // ten prompts are still its own.
+                    // ten prompts are still its own. **The departing
+                    // successor is measured first**, so a seat swapped out
+                    // early still says how far its brief carried it.
                     if self.successor.as_ref().is_none_or(|watch| watch.to != session_id) {
-                        self.successor = None;
+                        self.measure_successor_early();
                     }
                     // A running handoff needs no separate end here: the
                     // connect's own `clear_runtime_identity` drops it with
@@ -1650,10 +1652,16 @@ impl SessionTask {
                 {
                     workspace.stamp_respawn_overrides(&self.key, respawn_id, launch_settings);
                 }
-                // A person's send is one of the successor's ten, counted
-                // where the prompt actually reaches the agent.
-                let counts_for_successor =
-                    matches!(&other, Command::PromptUnder { source: PromptSource::You, .. });
+                // **A delivered prompt is a successor turn by its words, not by
+                // its source.** The transcript fold counts every non-machine
+                // prompt - a peer message, a cron fire, a board chase - so
+                // the watch counts the same set; counting a person's send
+                // alone left a successor delivered to by machinery
+                // unmeasured.
+                let counts_for_successor = matches!(
+                    &other,
+                    Command::PromptUnder { text, .. } if handoff::counts_as_successor_turn(text)
+                );
                 // **A prompt that never reaches the CLI leaves the queue.**
                 // Its card would otherwise wait on a frame no CLI will send,
                 // and its words would have no row. Kept before the move; the
@@ -2421,13 +2429,21 @@ impl SessionTask {
     }
 
     /// Measure the successor once its tenth prompt's turn has ended, when
-    /// the transcript holds all ten. A successor that leaves before then
-    /// goes unmeasured rather than writing half a comparison.
+    /// the transcript holds all ten.
     fn measure_successor_at_boundary(&mut self) {
         let due = self.successor.as_ref().is_some_and(|watch| watch.measure_at_boundary);
         if !due {
             return;
         }
+        self.measure_successor_early();
+    }
+
+    /// Record what a successor reached when the seat is replaced before its
+    /// ten turns. **The reading is the one that successor produced**, and
+    /// dropping the watch at the swap threw it away; `turns` on the record
+    /// says how far it got. A successor with no turn at all writes nothing,
+    /// because zeros would read as the best possible brief.
+    fn measure_successor_early(&mut self) {
         let Some(watch) = self.successor.take() else { return };
         let Some(workspace) = self.workspace.upgrade() else { return };
         let cwd = workspace.cwd_for_session(&self.key).unwrap_or_default();
@@ -2592,6 +2608,10 @@ impl SessionTask {
             });
             return;
         };
+        // **A successor swapped out before its ten turns is still measured.**
+        // The watch says whether its brief carried, and a seat that swaps
+        // again is the case that used to throw the reading away.
+        self.measure_successor_early();
         // **A successful swap emits no machine-turn frame on purpose.** The
         // successor's `SessionReplaced` makes every client re-read the record,
         // and the record answers `machine: null` because the handoff state was
@@ -4554,9 +4574,59 @@ mod tests {
         );
     }
 
+    /// A live worker row for `slot`, so the seat's cwd resolves to the seeded
+    /// project the way a production spawn's does. A handoff derives the
+    /// transcript path from that cwd.
+    fn seed_live_worker(workspace: &crate::Workspace, slot: &SessionSlot, session: &str) {
+        let project = workspace.project_key_for_name("forge").expect("the seeded project");
+        workspace.insert_live_worker(
+            &project,
+            crate::mcp::workers::types::WorkerEntry {
+                label: slot.label().to_owned(),
+                charter: "charter for the seat".to_owned(),
+                slot: slot.clone(),
+                session_id: Some(forge_primitives::SessionId::new(session)),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+    }
+
+    /// A user-turn transcript for the handoff reads to find, at the path the
+    /// project's cwd maps to.
+    fn write_transcript(config_dir: &std::path::Path, cwd: &str, session: &str, rows: &[&str]) {
+        let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(cwd));
+        let transcript =
+            forge_sdk::projects_dir_for(config_dir).join(&key).join(format!("{session}.jsonl"));
+        std::fs::create_dir_all(transcript.parent().expect("parent")).expect("projects dir");
+        let body = rows
+            .iter()
+            .map(|text| {
+                serde_json::json!({
+                    "type": "user",
+                    "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+                    "session_id": session,
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&transcript, format!("{body}\n")).expect("write transcript");
+    }
+
     /// A handoff swaps under the id its row names, leaves the brief where
     /// the successor takes it, and dispatches a spawn under that same id -
     /// the pair on the row and the occupant that runs are one.
+    ///
+    /// **The production build is the capture facts and no live list.** The
+    /// unit shape test drives `assemble`; this one drives `run_handoff`, so
+    /// a login section re-added on the way to the row fails here too.
     #[tokio::test]
     async fn a_handoff_swaps_under_the_id_its_row_names() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -4565,87 +4635,18 @@ mod tests {
         workspace.enable_test_dispatch_intercept();
         let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
         let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
-        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        // **A real UUID**: the transcript loader refuses anything else, and a
+        // handoff's own read would come back empty and read as a blank
+        // session.
+        let session = "9cfe315c-1111-4111-8111-111111111111";
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new(session));
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // **The project's live state must reach PART 1.** A worker that is
-        // not the seat and a cron are seeded; deleting the
-        // `live_state_sections` call leaves the brief without them. The
-        // seat's own row is seeded too, so the filter that keeps the
-        // successor from messaging itself is exercised.
         workspace.seed_test_project("forge", "/tmp/handoff-cut-project");
-        let project = workspace.project_key_for_name("forge").expect("the seeded project");
-        let worker = |label: &str, session: &str| crate::mcp::workers::types::WorkerEntry {
-            label: label.to_owned(),
-            charter: format!("charter for {label}"),
-            slot: SessionSlot::worker("TestOrg", "forge", label),
-            session_id: Some(forge_primitives::SessionId::new(session)),
-            status: forge_primitives::WorkerLiveness::Running,
-            spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by: SessionSlot::lead("TestOrg", "forge"),
-            needs_tag: false,
-            is_git_repo_at_spawn: false,
-            cwd: None,
-            diagnostic: None,
-            kick: None,
-        };
-        workspace.insert_live_worker(&project, worker("builder", "builder-session"));
-        workspace.insert_live_worker(&project, worker("handoff-cut", "old-session-id"));
-        workspace.seed_test_cron(forge_primitives::cron::CronEntry {
-            id: forge_primitives::cron::CronId::from("cron-1"),
-            project_name: "forge".to_owned(),
-            kind: forge_primitives::cron::CronKind::Recurring("0 9 * * *".to_owned()),
-            prompt: "morning summary".to_owned(),
-            description: None,
-            created_at: std::time::SystemTime::UNIX_EPOCH,
-            last_fire: None,
-            next_fire: std::time::SystemTime::UNIX_EPOCH,
-            team_role: None,
-            wake: true,
-        });
-        // **An open board row must reach PART 1.** The build reads the board
-        // the caller already holds, so a row is seeded; deleting the
-        // `&board` wiring fails this.
-        workspace.with_tasks_mut(|tasks| {
-            tasks.push(forge_primitives::Task {
-                id: forge_primitives::TaskId::from("board-row-1"),
-                project_name: "forge".to_owned(),
-                subject: "the open board row".to_owned(),
-                active_form: None,
-                detail: None,
-                status: forge_primitives::TaskStatus::Pending,
-                kind: forge_primitives::tasks::TaskKind::Finite,
-                owner: None,
-                parent: None,
-                waiting_on: None,
-                request: None,
-                estimate: None,
-                cadence: None,
-                rank: None,
-                verify: None,
-                attested: None,
-                reserved: None,
-                links: Vec::new(),
-                evidence: None,
-                version: 0,
-                archived_at: None,
-                created_at: std::time::SystemTime::UNIX_EPOCH,
-                updated_at: std::time::SystemTime::UNIX_EPOCH,
-            });
-        });
-        // **A live task must reach PART 1.** The build reads the seat's own
-        // domain, so the domain is registered and a background task seeded;
-        // deleting `sections.extend(live)` fails this.
-        workspace.domain_handles.lock().insert(slot.clone(), Arc::clone(&task.domain));
-        task.domain.lock().background_tasks.push(forge_primitives::background::BackgroundTask {
-            task_id: "b1".to_owned(),
-            is_backgrounded: true,
-            task_type: "local_bash".to_owned(),
-            description: "cargo watch".to_owned(),
-            command: Some("cargo watch".to_owned()),
-            tool_use_id: None,
-        });
+        seed_live_worker(&workspace, &slot, session);
+        let cwd = workspace.cwd_for_session(&slot).expect("the seat's cwd resolves");
+        write_transcript(dir.path(), &cwd, session, &["do the thing"]);
 
         task.execute_command(Command::Handoff { key: slot.clone(), brief: None });
         task.domain.lock().handoff.judgment = Some("Now: the cut is half in.".to_owned());
@@ -4664,76 +4665,42 @@ mod tests {
         .await
         .expect("the handoff lands");
 
-        assert_eq!(record.from, "old-session-id", "the row names the session that handed over");
+        assert_eq!(record.from, session, "the row names the session that handed over");
         assert_eq!(
             record.reason,
             forge_primitives::HandoffReason::Manual,
             "a manual handoff is a handoff asked for",
         );
-        assert!(
-            record.brief.ground_truth.iter().any(|section| section.label == "record"),
-            "the ground truth is built at the swap: {:?}",
+        let labels: Vec<&str> =
+            record.brief.ground_truth.iter().map(|section| section.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "seat",
+                "cwd",
+                "branch",
+                "role",
+                "uncommitted",
+                "PART 1 captured at the swap",
+                "record",
+            ],
+            "the production build prints the capture facts and no live list: {:?}",
             record.brief.ground_truth,
         );
-        let live = record
-            .brief
-            .ground_truth
-            .iter()
-            .find(|section| section.label == "background")
-            .expect("the live background task reaches PART 1");
         assert!(
-            live.lines.iter().any(|line| line.contains("local_bash: cargo watch [b1]")),
-            "with what it is and its id: {:?}",
-            live.lines,
+            record.brief.ground_truth.iter().find(|section| section.label == "record").is_some_and(
+                |section| section
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("live state is queried, not printed"))
+            ),
+            "and the query line that replaces the lists: {:?}",
+            record.brief.ground_truth,
         );
         assert!(
             record.brief.judgment.iter().any(|section| section.label == "Now"),
             "the caller's brief is the judgment half: {:?}",
             record.brief.judgment,
-        );
-        let workers = record
-            .brief
-            .ground_truth
-            .iter()
-            .find(|section| section.label == "live workers")
-            .expect("the other live workers reach PART 1");
-        let workers_text = workers.lines.join("\n");
-        assert!(
-            workers_text.contains("TestOrg/forge/builder"),
-            "a worker that is not the seat is named: {workers_text}",
-        );
-        assert!(
-            !workers_text.contains("TestOrg/forge/handoff-cut"),
-            "the seat handing over is not a worker to message: {workers_text}",
-        );
-        let crons = record
-            .brief
-            .ground_truth
-            .iter()
-            .find(|section| section.label == "live crons")
-            .expect("the project's crons reach PART 1");
-        assert!(
-            crons.lines.iter().any(|line| line.contains("cron-1")),
-            "the cron is named with its id: {:?}",
-            crons.lines,
-        );
-        let rows = record
-            .brief
-            .ground_truth
-            .iter()
-            .find(|section| section.label == "open board rows")
-            .expect("the open board rows reach PART 1");
-        let rows_text = rows.lines.join("\n");
-        assert!(
-            rows_text.contains("board-row-1") && rows_text.contains("the open board row"),
-            "the open board row is named: {rows_text}",
-        );
-        assert!(
-            rows_text.contains(
-                "board-row-1 - the open board row [pending], owner unowned - claim with \
-                 `tasks__claim`"
-            ),
-            "and its own door, not the section's legend: {rows_text}",
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -4755,67 +4722,6 @@ mod tests {
             workspace.handoff_for_successor(&slot, &record.to).is_some(),
             "and the record is written, so the successor is measurable",
         );
-    }
-
-    /// **A board the boot could not read says so in both places it is drawn.**
-    /// The live-state section and the seat's own board are built separately
-    /// from the same flag, and a handoff must not print "none open" or "no
-    /// rows owned" over a board that was never loaded.
-    #[tokio::test]
-    async fn a_handoff_over_an_unread_board_says_not_read_in_both_sections() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (workspace, mut update_rx) =
-            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
-        workspace.enable_test_dispatch_intercept();
-        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
-        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
-        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
-        workspace.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        workspace.seed_test_project("forge", "/tmp/handoff-unread-board");
-        workspace.tasks_load_failed.store(true, std::sync::atomic::Ordering::Relaxed);
-
-        task.execute_command(Command::Handoff { key: slot.clone(), brief: None });
-        task.domain.lock().handoff.judgment = Some("Next: read the board.".to_owned());
-        task.after_turn_ended();
-
-        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } =
-                    std::sync::Arc::unwrap_or_clone(frame.update)
-                {
-                    return handoff;
-                }
-            }
-            panic!("the handoff row was never emitted");
-        })
-        .await
-        .expect("the handoff lands");
-
-        for label in ["open board rows", "board"] {
-            let section = record
-                .brief
-                .ground_truth
-                .iter()
-                .find(|section| section.label == label)
-                .unwrap_or_else(|| {
-                    panic!("'{label}' is a section: {:?}", record.brief.ground_truth)
-                });
-            assert!(
-                section.lines.iter().any(|line| line.contains("not read")),
-                "'{label}' states the failed read: {:?}",
-                section.lines,
-            );
-            assert!(
-                !section
-                    .lines
-                    .iter()
-                    .any(|line| line.contains("none open") || line.contains("no rows owned")),
-                "'{label}' does not claim an empty board: {:?}",
-                section.lines,
-            );
-        }
     }
 
     /// A prompt that arrives while the seat swaps its occupant waits for the
@@ -5832,11 +5738,12 @@ mod tests {
         assert!(task.successor.is_none(), "the tenth turn closes the measurement");
     }
 
-    /// The successor's count is of a person's prompts, the same thing the
-    /// transcript fold counts. A forge delivery - the brief, a kick, an
-    /// auto-continue - is not one of the ten.
+    /// **The watch counts the prompts the transcript fold counts.** A person's
+    /// send, a peer message, a cron fire and a board chase all start a turn;
+    /// the brief and the judgment prompt do not. Counting only a person's send
+    /// left every successor delivered to by machinery unmeasured.
     #[tokio::test]
-    async fn only_a_persons_prompt_counts_toward_the_successor() {
+    async fn every_delivered_prompt_counts_toward_the_successor() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, _rx) =
             crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
@@ -5862,6 +5769,29 @@ mod tests {
             "a person's prompt is one of the ten",
         );
 
+        for (source, text) in [
+            (
+                crate::protocol::PromptSource::Peer,
+                "[Message id=m-1 from agent 'forge/steward' (org 'Busytools')]\n\nstatus?",
+            ),
+            (crate::protocol::PromptSource::Cron, "run the nightly sweep"),
+            (crate::protocol::PromptSource::Board, "a row you own has gone ready"),
+        ] {
+            task.execute_command(Command::PromptUnder {
+                key: slot.clone(),
+                text: text.to_owned(),
+                attachments: Vec::new(),
+                uuid: forge_sdk::request_id::next_forged_prompt_id(),
+                source,
+                dispatch_id: None,
+            });
+        }
+        assert_eq!(
+            task.successor.as_ref().map(|watch| watch.turns),
+            Some(4),
+            "a peer, a cron and a board chase each counted",
+        );
+
         task.execute_command(Command::PromptUnder {
             key: slot.clone(),
             text: "HANDOFF - old -> new".to_owned(),
@@ -5872,9 +5802,112 @@ mod tests {
         });
         assert_eq!(
             task.successor.as_ref().map(|watch| watch.turns),
-            Some(1),
-            "forge's own delivery is not one of them",
+            Some(4),
+            "the brief itself is not one of them",
         );
+    }
+
+    /// **A successor swapped out early still reports.** The watch is the only
+    /// reading its brief produced, and the swap used to drop it on the floor;
+    /// the turns it reached land on the record it arrived by.
+    #[tokio::test]
+    async fn a_successor_swapped_out_early_records_the_turns_it_reached() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        // **A real UUID**: the transcript loader refuses anything else.
+        let mid = "9cfe315c-2222-4222-8222-222222222222";
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new(mid));
+        workspace.seed_test_project("forge", "/tmp/handoff-early-swap");
+        seed_live_worker(&workspace, &slot, mid);
+
+        // The transcript the successor ran: three real prompts and the brief.
+        let cwd = workspace.cwd_for_session(&slot).expect("the seat's cwd resolves");
+        write_transcript(
+            dir.path(),
+            &cwd,
+            mid,
+            &[
+                "HANDOFF - pre -> mid",
+                "take the parser",
+                "actually, the client row first",
+                "and run the gate",
+            ],
+        );
+
+        // The record the successor arrived by, and the watch production arms.
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        crate::store::handoffs::put(
+            &db,
+            &forge_primitives::HandoffRecord {
+                slot: slot.clone(),
+                from: "pre-session-id".to_owned(),
+                to: mid.to_owned(),
+                reason: forge_primitives::HandoffReason::Manual,
+                fill_percent: None,
+                total_tokens: None,
+                max_tokens: None,
+                at_percent: 85,
+                brief: forge_primitives::HandoffBrief::default(),
+                transcript_path: "/tmp/pre.jsonl".to_owned(),
+                at: "2026-11-29T00:00:00Z".to_owned(),
+                cycle: forge_primitives::HandoffCycle::default(),
+                successor: None,
+            },
+            &[],
+        )
+        .expect("the record this occupant arrived by");
+        workspace.install_db_for_test(db);
+        task.successor =
+            workspace.handoff_for_successor(&slot, mid).map(|(record, predecessor_reads)| {
+                crate::handoff::SuccessorWatch {
+                    to: record.to,
+                    turns: 0,
+                    predecessor_reads,
+                    measure_at_boundary: false,
+                }
+            });
+        assert!(task.successor.is_some(), "premise: the successor watch is armed");
+
+        // A new handoff on the seat swaps that successor out before ten turns.
+        task.execute_command(Command::Handoff { key: slot.clone(), brief: None });
+        task.domain.lock().handoff.judgment = Some("Now: carry on.".to_owned());
+        task.after_turn_ended();
+        assert!(task.successor.is_none(), "the early swap takes the watch");
+
+        let measured = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some((record, _)) = workspace.handoff_for_successor(&slot, mid)
+                    && record.successor.is_some()
+                {
+                    return record;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the early measurement is written");
+        let successor = measured.successor.expect("the counts");
+        assert_eq!(successor.turns, 3, "the three prompts it ran: {successor:?}");
+        assert_eq!(successor.corrections, 1, "and the correction among them: {successor:?}");
+        // The new handoff's own row still lands; the early reading did not
+        // replace it.
+        let landed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+        assert_ne!(landed.to, mid, "the row names the new successor");
     }
 
     /// **A prompt held by a swap draws no row while it waits.** Its row lands
