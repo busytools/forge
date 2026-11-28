@@ -15,12 +15,13 @@
  *   it;
  * - `updated_secs_ago` is the server's own age plus the elapsed time, so a
  *   page whose clock is far from the server's still draws the right age;
- * - `overdue`, `no_movement` and `waiting_too_long` cross at the same
- *   thresholds the core uses.
+ * - `overdue` and `stale` cross at the same thresholds the core uses: a
+ *   finite row past its estimate or a wait past the band is overdue, and a
+ *   row nobody has moved (or whose owner is gone) is stale.
  *
- * The marks that are not about time - ready, in review, owner gone, to close -
- * stay exactly as the server derived them, and a field added to a row later
- * passes through untouched.
+ * The marks that are not about time - ready, in review, owner gone's own
+ * slot, to close - stay exactly as the server derived them, and a field added
+ * to a row later passes through untouched.
  */
 
 import type { BoardWire } from '../wire/board';
@@ -60,9 +61,13 @@ export function agedRow(row: BoardRow, nowSecs: number, readAtMs: number): Board
     updated_secs_ago: updatedAgo,
     marks: {
       ...row.marks,
-      overdue: estimate !== null && estimate.secs > 0 && worked > estimate.secs,
-      no_movement: !parked && updatedAgo > STALE_SECS,
-      waiting_too_long: row.task.status === 'waiting' && !parked && updatedAgo > STALE_SECS,
+      overdue:
+        (row.task.kind === 'finite' &&
+          estimate !== null &&
+          estimate.secs > 0 &&
+          worked > estimate.secs) ||
+        (row.task.status === 'waiting' && !parked && (row.wait_secs ?? updatedAgo) > STALE_SECS),
+      stale: !parked && (updatedAgo > STALE_SECS || !row.owner_live),
     },
   };
 }

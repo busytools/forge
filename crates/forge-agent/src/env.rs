@@ -8,6 +8,7 @@
 pub mod cli_version;
 pub mod config_watch;
 pub mod documents;
+pub mod evidence;
 pub mod file_index;
 pub mod git_command;
 pub mod git_diff;

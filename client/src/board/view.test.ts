@@ -13,14 +13,18 @@ function task(id: string, subject: string, status: TaskStatus, over: Partial<Tas
     active_form: null,
     detail: null,
     status,
+    kind: 'finite',
     owner: null,
     parent: null,
     waiting_on: null,
+    request: null,
     estimate: null,
+    cadence: null,
     rank: null,
     verify: null,
     links: [],
-    attempt: 0,
+    evidence: null,
+    version: 0,
     archived_at: null,
     created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
@@ -33,8 +37,6 @@ function marks(over: Partial<Marks> = {}): Marks {
     ready: false,
     in_review: false,
     overdue: false,
-    no_movement: false,
-    waiting_too_long: false,
     stale: false,
     to_close: false,
     ...over,
@@ -46,6 +48,8 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     task,
     worked_secs: 0,
     updated_secs_ago: 0,
+    owner_live: true,
+    wait_secs: null,
     marks: marks(),
     rollup: null,
     parent_subject: null,
@@ -81,30 +85,24 @@ describe("one project's board", () => {
       ),
       row(
         task('ask', 'a question', 'waiting', {
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: false },
         }),
       ),
     ]);
 
     const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     const lane = (key: string) => view.lanes.find((entry) => entry.key === key);
-    // Every state has its lane, in the order the board draws them: the pool
-    // leads, then the lane that wants the reader, then the work.
-    expect(view.lanes.map((entry) => entry.name)).toEqual([
-      'Backlog',
-      'Waiting',
-      'In progress',
-      'Completed',
-      'Failed',
-      'Canceled',
-    ]);
+    // Every LIVE state has its lane, in the order the board draws them: the
+    // pool leads, then the lane that wants the reader, then the work. A
+    // terminal row leaves the bulk board at once - the archived toggle
+    // reads finished work.
+    expect(view.lanes.map((entry) => entry.name)).toEqual(['Backlog', 'Waiting', 'In progress']);
     expect(lane('in_progress')?.cards.map((card) => card.id)).toEqual(['child']);
     expect(lane('in_progress')?.cards[0]?.epic).toBe('early epic');
     expect(lane('pending')?.cards.map((card) => card.id)).toEqual(['early', 'late']);
     // A decision wait is a waiting row like any other in the lane; the
     // strip is where the reader acts on it.
     expect(lane('waiting')?.cards.map((card) => card.id)).toEqual(['dep', 'ask']);
-    expect(lane('completed')?.cards).toEqual([]);
     expect(view.waiting.map((entry) => entry.id)).toEqual(['ask']);
   });
 
@@ -159,7 +157,7 @@ describe("one project's board", () => {
       row(
         task('verify', 'a look', 'waiting', {
           verify: 'user',
-          waiting_on: { kind: 'decision', detail: 'the mock', on: null, verification: true },
+          waiting_on: { kind: 'user', detail: 'the mock', on: null, verification: true },
         }),
         // An epic with two of its four children still open: the strip has to
         // carry that, because the core refuses the approve over it.
@@ -167,7 +165,7 @@ describe("one project's board", () => {
       ),
       row(
         task('ask', 'a question', 'waiting', {
-          waiting_on: { kind: 'decision', detail: 'which shape', on: null, verification: false },
+          waiting_on: { kind: 'user', detail: 'which shape', on: null, verification: false },
         }),
       ),
       row(
@@ -209,12 +207,12 @@ describe("one project's board", () => {
       row(
         task('own', 'a minted look', 'waiting', {
           verify: 'user',
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: true },
         }),
       ),
       row(
         task('inherited', 'an inherited park', 'waiting', {
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: true },
         }),
       ),
     ]);
@@ -255,14 +253,15 @@ describe("one project's board", () => {
     ]);
 
     const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
-    expect(view.lanes.flatMap((lane) => lane.cards).length).toBe(4);
+    // Two live children draw; the terminal ones are off the bulk board.
+    expect(view.lanes.flatMap((lane) => lane.cards).length).toBe(2);
     // Nothing is in the strip here; the hold's numbers are what this pins, so
     // they are read off a root put in the gate.
     const gated = wireWith([
       row(
         task('epic2', 'the epic', 'waiting', {
           verify: 'user',
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: true },
         }),
         { rollup: [1, 3] },
       ),
@@ -282,7 +281,7 @@ describe("one project's board", () => {
         task('kid', 'a child', 'waiting', {
           parent: 'root3',
           verify: 'user',
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: true },
         }),
         { rollup: [0, 1] },
       ),
@@ -297,24 +296,14 @@ describe("one project's board", () => {
    * The lead's attested completion and the user's own reserved pick are
    * named in words on the card (#2423/B, /C).
    */
-  it('marks a lead attestation and a reserved pick in words', () => {
-    const wire = wireWith([
-      row(
-        task('a', 'an attested look', 'completed', {
-          attested: {
-            evidence: 'Looks right',
-            at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-          },
-        }),
-      ),
-      row(task('r', 'a reserved pick', 'pending', { reserved: 'user' })),
-    ]);
+  it('marks a reserved pick in words', () => {
+    const wire = wireWith([row(task('r', 'a reserved pick', 'pending', { reserved: 'user' }))]);
     const cards = boardView(wire.home, wire.board, 'TestOrg', 'proj').lanes.flatMap(
       (lane) => lane.cards,
     );
-    const chips = (id: string) => cards.find((card) => card.id === id)?.chips ?? [];
-    expect(chips('a').map((chip) => chip.label)).toContain('lead attested');
-    expect(chips('r').map((chip) => chip.label)).toContain('reserved for you');
+    expect(cards.find((card) => card.id === 'r')?.chips.map((chip) => chip.label)).toContain(
+      'reserved for you',
+    );
   });
 
   /** The marks become words, and the wait's kind decides the chip. */
@@ -330,7 +319,7 @@ describe("one project's board", () => {
         task('t2', 'waits', 'waiting', {
           waiting_on: { kind: 'resource', detail: null, on: null, verification: false },
         }),
-        { updated_secs_ago: 18_000, marks: marks({ waiting_too_long: true }) },
+        { updated_secs_ago: 18_000, marks: marks({ overdue: true }) },
       ),
       row(
         task('t3', 'very over', 'in_progress', {

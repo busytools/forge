@@ -433,7 +433,10 @@ own look before merge; a fix merges after the review loop as usual. A \
 plan, spec or design the user must review reaches them through \
 `documents__hand_off` with `reviewable: true`, never as a path in \
 chat. Workers build; subagents review, unless the user wants a \
-reviewer kept on as a long-lived worker.";
+reviewer kept on as a long-lived worker. An ask the user must answer is \
+raised as a wait on the task board - the board is the non-immediate \
+channel, and a row waiting on the user is blocked on them - while an ask \
+you need answered now goes to the user directly.";
 
 /// Forge-supplied resume kick for a worker whose row carries no
 /// `resume_kick` of its own. On a resuming re-spawn forge delivers this
@@ -633,6 +636,12 @@ pub struct Workspace {
     /// `[gotify]` section. Swapped whole by [`Workspace::reload_config`],
     /// which is why readers take an owned snapshot rather than a reference.
     pub(crate) config: parking_lot::RwLock<Arc<LoadedConfig>>,
+    /// The project's own check of a completion's artifact. Production is
+    /// the self-contained git check ([`crate::env::evidence::GitEvidence`]);
+    /// the testing stub accepts, so a test that is not about the gate needs
+    /// no repository behind it.
+    pub(crate) evidence_verifier:
+        parking_lot::RwLock<Arc<dyn crate::env::evidence::EvidenceVerifier>>,
     /// The effective-config document, rebuilt on every applied reload and
     /// shared by every socket connection. `None` until the server names the
     /// build that carries it.
@@ -857,9 +866,9 @@ pub struct Workspace {
     /// The per-lead clock of the injected board sweep, keyed by the
     /// lead's slot. In memory only, so a restart re-arms every lead:
     /// the sweep is a moment, not a schedule the store should own.
-    /// `pub(crate)` so the impl block in [`crate::idle_sweep`] can
+    /// `pub(crate)` so the impl block in [`crate::drive`] can
     /// reach it.
-    pub(crate) idle_sweeps: Mutex<HashMap<SessionSlot, crate::idle_sweep::SweepClock>>,
+    pub(crate) drive_clocks: Mutex<HashMap<SessionSlot, crate::drive::DriveClock>>,
     /// One claim per composed worker-worktree path, held while a spawn's
     /// ensure/insert or a despawn's removal is in flight. The live
     /// registry is per project; this is the repository-wide one, so two
@@ -1136,7 +1145,7 @@ pub struct Workspace {
     /// Connected-hook respawn trigger without writing a
     /// real `forge.toml`. Empty in production.
     #[cfg(any(test, feature = "testing"))]
-    test_extra_projects: Mutex<Vec<LoadedProject>>,
+    pub(crate) test_extra_projects: Mutex<Vec<LoadedProject>>,
     /// Test-only stand-in for the CLI's per-user preferences document, so
     /// a view fixture reads an ignore preference without the machine's
     /// real `$HOME/.claude.json`. `None` means no fixture seeded one, and
@@ -2553,6 +2562,9 @@ impl Workspace {
         let workspace = Self {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
+            evidence_verifier: parking_lot::RwLock::new(Arc::new(
+                crate::env::evidence::GitEvidence,
+            )),
             settings,
             settings_version: std::sync::OnceLock::new(),
             settings_write: parking_lot::Mutex::new(()),
@@ -2613,7 +2625,7 @@ impl Workspace {
             command_senders: Mutex::new(HashMap::new()),
             session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
-            idle_sweeps: Mutex::new(HashMap::new()),
+            drive_clocks: Mutex::new(HashMap::new()),
             worktree_claims: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
@@ -5161,6 +5173,10 @@ impl Workspace {
         // back a lead with neither its mission nor its delegation rules.
         if matches!(kind, crate::mcp::SessionKind::Lead) {
             crate::spawn::apply_lead_charter(launch_settings);
+            crate::spawn::append_policy_notes(
+                launch_settings,
+                &self.policy_notes_for_project(slot.project()),
+            );
             Self::apply_lead_delegation(launch_settings, kind);
         }
         let (registration, replaced) = {
@@ -6385,6 +6401,20 @@ impl Workspace {
     /// been dropped.
     pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
         self.dispatch_answered(cmd)
+    }
+
+    /// A snooze's until as the board states it: `activity`, or a duration
+    /// from now. Anything else is `None`, so the refusal names the two
+    /// forms.
+    fn parse_snooze(stated: &str) -> Option<forge_primitives::tasks::SnoozeUntil> {
+        let stated = stated.trim();
+        if stated.eq_ignore_ascii_case("activity") {
+            return Some(forge_primitives::tasks::SnoozeUntil::Activity);
+        }
+        let period = forge_primitives::tasks::Estimate::parse(stated)?;
+        Some(forge_primitives::tasks::SnoozeUntil::At(
+            std::time::SystemTime::now() + std::time::Duration::from_secs(period.secs),
+        ))
     }
 
     /// Dispatch one command a view sent over the socket.
@@ -7747,27 +7777,83 @@ impl Workspace {
                         }
                     }
                 }
-                Command::TaskAnswer { project, id, words } => {
+                Command::TaskAnswer { project, id, choice, text, disposition, lesson, words } => {
                     let id = TaskId::from(id.as_str());
-                    match self.answer_task(&project, &id, &words) {
+                    // **One door, one value for the kind**, the same rule the
+                    // MCP door enforces: the board's answer carries exactly
+                    // one of `choice`, `text` or `disposition`, and a
+                    // disposition outside the four is refused by name rather
+                    // than falling through and resuming a wait with no value
+                    // recorded.
+                    let value = match (&choice, &text, &disposition) {
+                        (Some(choice), None, None) => {
+                            Ok(forge_primitives::tasks::AnswerValue::Choice(choice.clone()))
+                        }
+                        (None, Some(text), None) => {
+                            Ok(forge_primitives::tasks::AnswerValue::Text(text.clone()))
+                        }
+                        (None, None, Some(disposition)) => {
+                            match forge_primitives::tasks::Disposition::parse(disposition) {
+                                Some(disposition) => Ok(
+                                    forge_primitives::tasks::AnswerValue::Disposition(disposition),
+                                ),
+                                None => Err(format!(
+                                    "a disposition is one of {}; \"{disposition}\" is not",
+                                    forge_primitives::tasks::Disposition::ALL
+                                        .map(forge_primitives::tasks::Disposition::as_str)
+                                        .join(", "),
+                                )),
+                            }
+                        }
+                        _ => {
+                            Err("an answer states exactly one of `choice`, `text` or `disposition`"
+                                .to_owned())
+                        }
+                    };
+                    let answered: Result<Option<forge_primitives::tasks::Task>, String> =
+                        match value {
+                            // The user's own door carries no version: there is no
+                            // second reader to refuse, and the board they acted
+                            // on is the one they saw.
+                            Ok(value) => self
+                                .answer_decision(
+                                    &project,
+                                    &id,
+                                    forge_primitives::tasks::By::User,
+                                    value,
+                                    Some(words.as_str()),
+                                    lesson.as_deref(),
+                                )
+                                .map_err(|refused| refused.to_string()),
+                            Err(refused) => Err(refused),
+                        };
+                    match answered {
                         Ok(Some(task)) => {
-                            // The words ride the notice: the owner should read
-                            // what the user said where it is told to resume,
-                            // not go looking for it.
+                            // The choice and the words ride the notice: the
+                            // owner should read what the user said where it
+                            // is told to resume, not go looking for it.
+                            // What the person said rides the notice, whether
+                            // it came as the value or as the note: the owner
+                            // should not have to go looking for it.
+                            let said = match (&choice, &text, &disposition, words.is_empty()) {
+                                (Some(choice), _, _, _) => format!("\"{choice}\""),
+                                (None, Some(text), _, _) if !text.trim().is_empty() => {
+                                    format!("\"{text}\"")
+                                }
+                                (None, _, Some(disposition), _)
+                                    if !disposition.trim().is_empty() =>
+                                {
+                                    format!("\"{disposition}\"")
+                                }
+                                (None, _, _, false) => format!("\"{words}\""),
+                                (None, _, _, true) => "with no words".to_owned(),
+                            };
                             self.tell_row_owner(
                                 &task,
-                                if words.is_empty() {
-                                    format!(
-                                        "task board: the user answered \"{}\" with no words - \
-                                         resume it.",
-                                        task.subject,
-                                    )
-                                } else {
-                                    format!(
-                                        "task board: the user answered \"{}\": \"{}\" - resume it.",
-                                        task.subject, words,
-                                    )
-                                },
+                                format!(
+                                    "task board: the user answered \"{}\": {said} - resume it.",
+                                    task.subject,
+                                ),
                             );
                         }
                         Ok(None) => {
@@ -7790,8 +7876,57 @@ impl Workspace {
                                 refusal = %refused,
                                 "a user answer was refused",
                             );
-                            self.board_edit_refused("an answer", &refused.to_string());
+                            self.board_edit_refused("an answer", &refused);
                         }
+                    }
+                }
+                Command::BoardSeen { project } => {
+                    self.record_board_seen(&project, std::time::SystemTime::now());
+                }
+                Command::TaskAck { project, id } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.acknowledge_task(&project, &id) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => self.board_edit_refused(
+                            "an acknowledgement",
+                            "the row it named is no longer there",
+                        ),
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "an acknowledgement was refused",
+                            );
+                            self.board_edit_refused("an acknowledgement", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskSnooze { project, id, until } => {
+                    let id = TaskId::from(id.as_str());
+                    match Self::parse_snooze(&until) {
+                        None => self.board_edit_refused(
+                            "a snooze",
+                            "the until is a duration (\"2h\", \"1d\") or \"activity\"",
+                        ),
+                        Some(until) => match self.snooze_task(&project, &id, until) {
+                            Ok(Some(_)) => {}
+                            Ok(None) => self.board_edit_refused(
+                                "a snooze",
+                                "the row it named is no longer there",
+                            ),
+                            Err(refused) => {
+                                tracing::debug!(
+                                    target: "forge_workspace",
+                                    project = %project,
+                                    id = %id.as_str(),
+                                    refusal = %refused,
+                                    "a snooze was refused",
+                                );
+                                self.board_edit_refused("a snooze", &refused.to_string());
+                            }
+                        },
                     }
                 }
                 Command::TaskRank { project, id, to } => {
@@ -7940,6 +8075,93 @@ impl Workspace {
                         }
                     }
                 }
+                Command::TaskRestore { project, id } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.restore_task(&project, &id) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => self.board_edit_refused(
+                            "a restore",
+                            "the archive does not hold the row it named",
+                        ),
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a board restore was refused",
+                            );
+                            self.board_edit_refused("a restore", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskDetail { project, id } => {
+                    // **One row whole, on demand.** The board's bulk read
+                    // carries the window's fields only, so a drawer asks for
+                    // the brief and the history when it opens; the answer is
+                    // a `task_detail` update on the project's lead seat, the
+                    // same route every other board announcement takes.
+                    let id = TaskId::from(id.as_str());
+                    let now = SystemTime::now();
+                    let live = self
+                        .board_rows(&project, now, crate::board::DEFAULT_STALE_SECS)
+                        .into_iter()
+                        .find(|row| row.task.id == id);
+                    // **A closed row's page is derived like a live one's**,
+                    // and a store it could not read is refused as retryable
+                    // rather than answering "no such row".
+                    let row = match live {
+                        Some(row) => Ok(Some(row)),
+                        None => self.archived_tasks_for_project_checked(&project).map(|archived| {
+                            archived.into_iter().find(|task| task.id == id).map(|task| {
+                                let history = {
+                                    let guard = self.db.lock();
+                                    guard.as_ref().map_or_else(Vec::new, |db| {
+                                        crate::store::task_history::list_for_project(db, &project)
+                                            .unwrap_or_default()
+                                    })
+                                };
+                                let owner_live = task
+                                    .owner
+                                    .as_ref()
+                                    .is_none_or(|owner| self.seat_is_live(owner));
+                                crate::board::detail_row(task, &history, now, owner_live)
+                            })
+                        }),
+                    };
+                    match row {
+                        Ok(row) => match self.lead_slot_for_project(&project) {
+                            Some(key) => {
+                                let _ = self.update_tx.send(SessionUpdate::TaskDetail {
+                                    key,
+                                    project: project.clone(),
+                                    row: row.map(Box::new),
+                                });
+                            }
+                            None => {
+                                tracing::debug!(
+                                    target: "forge_workspace::tasks",
+                                    project = %project,
+                                    "a row-detail read named a project no project carries",
+                                );
+                            }
+                        },
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "forge_workspace::tasks",
+                                event_name = "task_detail_archive_read_failed",
+                                project = %project,
+                                id = %id.as_str(),
+                                %error,
+                                "a row read could not reach the archive; the read is refused as retryable",
+                            );
+                            self.board_edit_refused(
+                                "a row read",
+                                "the task archive could not be read; retry",
+                            );
+                        }
+                    }
+                }
                 Command::TaskAssign { project, id, owner } => {
                     // A project this forge does not carry has no seat to name
                     // and no row to hold: an assignment to it is refused
@@ -8008,16 +8230,25 @@ impl Workspace {
                         active_form: None,
                         detail: None,
                         status: forge_primitives::tasks::TaskStatus::Pending,
+                        kind: forge_primitives::tasks::TaskKind::Finite,
                         owner: None,
                         parent: parent.map(|id| TaskId::from(id.as_str())),
                         waiting_on: None,
+                        request: None,
                         estimate: None,
+                        cadence: None,
                         rank: None,
                         verify: None,
                         attested: None,
                         reserved: None,
                         links: Vec::new(),
-                        attempt: 0,
+                        // **A row created on the board carries no evidence.**
+                        // An earlier cut put a placeholder commit here, and it
+                        // reached agents through `tasks__get` as a real claim;
+                        // a completion states its own evidence like any other
+                        // row's.
+                        evidence: None,
+                        version: 0,
                         archived_at: None,
                         created_at: now,
                         updated_at: now,
@@ -11960,6 +12191,7 @@ mod account_stamp_tests {
         LoadedProject {
             name: "forge".to_owned(),
             path: PathBuf::from("/tmp/forge"),
+            connector: None,
             display_path: "~/Projects/forge".to_owned(),
             org: "Personal".to_owned(),
             accounts: vec!["Stargate".to_owned()],
@@ -12378,16 +12610,26 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12434,16 +12676,26 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12455,16 +12707,26 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: Some(TaskId::from("epic")),
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: Some(Verify::User),
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12514,18 +12776,28 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             // A child, so the approval completes it on the live board -
             // a root would close and archive, which is a different test.
             parent: Some(TaskId::from("epic")),
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: Some(forge_primitives::tasks::Verify::User),
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12651,16 +12923,26 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: Some(owner.clone()),
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12748,27 +13030,41 @@ mod tests {
             active_form: None,
             detail: None,
             status,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: Some(owner.clone()),
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
         };
         let question = || Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: None,
             on: None,
             verification: false,
             parked: false,
             since: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
         };
 
         // The wait, answered: the words ride the notice, and it goes to the
@@ -12779,7 +13075,11 @@ mod tests {
         ws.dispatch(Command::TaskAnswer {
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
-            words: "get going".to_owned(),
+            choice: None,
+            text: Some("get going".to_owned()),
+            disposition: None,
+            lesson: None,
+            words: String::new(),
         })
         .expect("app-level commands are accepted");
         let (key, text) = told_one(&mut rx);
@@ -12795,11 +13095,33 @@ mod tests {
         ws.dispatch(Command::TaskAnswer {
             project: "proj".to_owned(),
             id: "t-2".to_owned(),
+            choice: None,
+            text: Some(String::new()),
+            disposition: None,
+            lesson: None,
             words: String::new(),
         })
         .expect("accepted");
         let (_, text) = told_one(&mut rx);
         assert!(text.contains("no words"), "an empty answer is said plainly: {text}");
+
+        // A disposition answer names the disposition in the notice, not a
+        // blank: the choice is the answer, and the owner reads it there.
+        let mut disposed = sample("t-7", TaskStatus::Waiting);
+        disposed.waiting_on = Some(question());
+        ws.push_task(disposed);
+        ws.dispatch(Command::TaskAnswer {
+            project: "proj".to_owned(),
+            id: "t-7".to_owned(),
+            choice: None,
+            text: None,
+            disposition: Some("retry".to_owned()),
+            lesson: None,
+            words: String::new(),
+        })
+        .expect("accepted");
+        let (_, text) = told_one(&mut rx);
+        assert!(text.contains("retry"), "the disposition rides the notice: {text}");
 
         // A send-back carries the words too.
         let mut sent = sample("t-3", TaskStatus::Waiting);
@@ -12878,16 +13200,26 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::InProgress,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12925,16 +13257,26 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::InProgress,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: Some(SessionSlot::new("TestOrg", "proj", "sleeper")),
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12970,16 +13312,26 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::InProgress,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: Some(owner.clone()),
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -13064,16 +13416,26 @@ path = "{}"
             active_form: None,
             detail: None,
             status: TaskStatus::InProgress,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: Some(lead.clone()),
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -17812,6 +18174,28 @@ provider = "anthropic"
         let key = SessionSlot::from_str_for_test("never-registered");
         let err = workspace.refresh_context_usage(&key).expect_err("unknown session");
         assert!(matches!(err, DispatchError::UnknownSession(_)));
+    }
+
+    /// **A row cut on the board carries no evidence.** An earlier cut wrote a
+    /// placeholder commit into every UI-created row, and it reached agents
+    /// through `tasks__get` as a real claim; a completion states its own.
+    #[test]
+    fn a_row_created_on_the_board_carries_no_evidence() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj", "/tmp/tp-board-create");
+        ws.dispatch(Command::TaskCreate {
+            project: "proj".to_owned(),
+            subject: "cut from the board".to_owned(),
+            parent: None,
+        })
+        .expect("the create dispatches");
+        let rows = ws.tasks_for_project("proj");
+        assert_eq!(rows.len(), 1, "one row was cut");
+        assert!(
+            rows[0].evidence.is_none(),
+            "a board-created row states no claim of its own: {:?}",
+            rows[0].evidence,
+        );
     }
 
     /// `dispatch(Command::Cancel)` falls back to synchronous direct

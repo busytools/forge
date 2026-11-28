@@ -367,9 +367,9 @@ settings card's `enrol`, which needs the vault open.
 
 ## Subjects
 
-Everything a client reads is addressed by a subject, and there are seven:
-`home`, `board`, `session <org>/<project>/<label>`, `usage`, `dictate_models`,
-`extensions` and `dictate`.
+Everything a client reads is addressed by a subject, and there are eight:
+`home`, `board`, `archived`, `session <org>/<project>/<label>`, `usage`,
+`dictate_models`, `extensions` and `dictate`.
 
 A seat nobody has started is an answer rather than a silence. Subscribing
 to one that is not there comes back as an `error` saying so, so a client
@@ -396,14 +396,14 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 74
-variants, 67 of them struct variants; the seven unit variants,
+A command's variant is its name around its field bag - `Command` has 79
+variants, 72 of them struct variants; the seven unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all`, `plugin_check_updates` and
 `vault_lock`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 79 of `SessionUpdate`'s 82 variants are struct variants too. The other
+and 80 of `SessionUpdate`'s 83 variants are struct variants too. The other
 three are why the update payload is not one shape: they are unit variants and
 cross as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
@@ -1283,9 +1283,15 @@ them (#2517).
 
 | Field      | What it is                                                                                                                                                                                                                                                               |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `projects` | One entry per project: `project` (its identity - `org` and `name`; the rest of a project's view is the home's), `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
+| `projects` | One entry per project: `project` (its identity - `org` and `name`; the rest of a project's view is the home's), `rows` (the project's LIVE rows - a terminal row has left this read - in the window's fields only: each row a task with its worked time, ages, owner liveness and marks, plus its rollup and its epic's subject; a row's `detail` brief and its history are `tasks__get`'s, or a `task_detail` command's when a drawer opens), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
+
+**`archived`** is the closed view, read once each time the board's
+`archived` toggle opens: one entry per project with `project` and `rows`,
+the terminal rows still in the live set followed by the archive, each a task
+carrying its `archived_at` where it has one.
 
 **`board` is patched when the variants that move it land**: `tasks_changed`,
+`task_detail` (one row read whole, answering a `task_detail` command),
 `cron_schedules_changed` and `connector_subscriptions_changed`, plus the
 seat events its rows' `stale` mark is read from (`spawning`, `connected`,
 `session_replaced`, `releasing`, `connection_failed`,

@@ -43,14 +43,15 @@
   /* The takeover's slim bar: back and done return the reader where they
      were, the project's name carries its own read, and the seats sit at the
      end - a card dropped on one is assigned to it. */
-  .b-top { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+  .b-top { display: flex; align-items: center; gap: 8px; padding: 6px 0 0; }
+  .b-crumb { display: flex; align-items: baseline; gap: 12px; }
+  .b-counts { display: flex; align-items: baseline; gap: 10px; margin: 10px 0 0;
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .b-counts b { font-weight: 500; color: var(--hot); }
   .b-back, .b-done { font-family: var(--mono); font-size: 12.5px; color: var(--muted);
     background: transparent; border: 0; border-radius: 999px; padding: 7px 12px; cursor: pointer; }
   .b-back:hover, .b-done:hover { background: var(--s2); color: var(--text); }
-  .b-id { margin-left: 8px; display: flex; align-items: baseline; gap: 12px; }
   .b-nm { font-size: 19px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
-  .b-read { font-size: 12.5px; color: var(--dim); }
-  .b-read b { font-weight: 500; color: var(--hot); }
   .b-spacer { flex: 1; }
   .b-seat { font-family: var(--mono); font-size: 12.5px; color: var(--blue);
     text-decoration: none; background: var(--s2); border-radius: 999px; padding: 4px 11px; }
@@ -99,7 +100,8 @@
   .b-in::placeholder { color: var(--dim); }
 
   /* lanes: a name, a count and a rule - no boxes around the column. Every
-     state keeps its lane, and lanes that do not fit wrap to a second row:
+     LIVE state keeps its lane (finished work is the archive's shelf), and
+     lanes that do not fit wrap to a second row:
      the sheet never scrolls sideways, and a missing lane would read as a
      missing state. A lane fills its column, an empty one included, so the
      whole strip takes a drop. */
@@ -197,6 +199,106 @@
 
   /* ---------- the drawer: one row's own page over the board ---------- */
 
+  /* the window: the page's front door - what needs the reader, what looks
+     wrong, who is doing what, and what is next. The full board and the
+     archive are one toggle away, drawn below as their own faces. */
+  .w-switch { display: flex; gap: 6px; margin: 22px 0 20px; flex-wrap: wrap; }
+  .w-tab { font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+    background: var(--s2); border: 1px solid transparent; border-radius: 999px;
+    padding: 7px 14px; cursor: pointer; }
+  .w-tab[aria-selected="true"] { color: var(--text); background: var(--s3); border-color: var(--line); }
+  .w-window { display: flex; flex-direction: column; gap: 20px; margin-bottom: 40px; }
+  .w-h { display: flex; align-items: center; gap: 8px; margin: 0 0 6px;
+    font-family: var(--mono); font-size: 12.5px; font-weight: 500;
+    letter-spacing: .05em; color: var(--dim); }
+  .w-n { background: var(--s3); color: var(--text); border-radius: 999px; padding: 1px 8px; }
+  .w-quiet { color: var(--dim); font-size: 14px; }
+  .w-claim { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 12.5px;
+    line-height: 1.6; }
+  .w-digest { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
+    padding: 9px 12px; }
+  .w-digest-title { margin: 0 0 4px; font-family: var(--mono); font-size: 12.5px;
+    color: var(--text); }
+  .w-digest-lines { list-style: none; margin: 0; padding: 0; display: flex;
+    flex-direction: column; gap: 2px; }
+  .w-digest-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .w-digest-line { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+    min-height: 24px; padding: 0 8px; margin-left: -8px; border: 1px solid transparent;
+    border-radius: 999px; background: none; cursor: pointer;
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .w-digest-static { cursor: default; }
+  .w-digest-label { color: var(--muted); }
+  .w-digest-caret { color: var(--dim); }
+  .w-sample { padding: 4px 0 4px 8px; }
+  .w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
+  .w-need { background: var(--sel); border-radius: var(--r); padding: 12px 14px 10px; position: relative; }
+  .w-need::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
+    background: var(--accent); border-radius: var(--r) 0 0 var(--r); opacity: .8; }
+  .w-need.seen::before { background: var(--dim); opacity: .6; }
+  .w-need.snoozed { background: var(--s2); }
+  .w-need.snoozed::before { background: var(--dim); opacity: .45; }
+  .w-chip { color: var(--dim); background: var(--s3); border-radius: 999px;
+    padding: 0 8px; font-size: 12.5px; }
+  .w-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+    margin-bottom: 4px; font-family: var(--mono); font-size: 12.5px; }
+  .w-kind { display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--mono); font-size: 12.5px; color: var(--hot); }
+  .w-kind .ic { width: 11px; height: 11px; }
+  .w-ctx { color: var(--dim); }
+  .w-age { margin-left: auto; color: var(--dim); }
+  .w-q { margin: 0 0 6px; font-size: 15px; font-weight: 500; line-height: 1.35; color: var(--text); }
+  .w-door { display: inline-block; margin-bottom: 6px; font-family: var(--mono);
+    font-size: 12.5px; color: var(--blue); text-decoration: none; }
+  .w-ev { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 0;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .w-ev-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .w-more { background: none; border: none; padding: 2px 0; color: var(--dim);
+    font-family: var(--mono); font-size: 12.5px; cursor: pointer;
+    text-decoration: underline; text-underline-offset: 2px; }
+  .w-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  .w-options { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+  .w-primary, .w-secondary, .w-ghost { min-height: 32px; padding: 0 14px;
+    border-radius: 999px; font-family: var(--mono); font-size: 12.5px; cursor: pointer; }
+  .w-primary { background: var(--ok); color: var(--bg); border: 1px solid var(--ok); font-weight: 500; }
+  .w-secondary { background: transparent; color: var(--bad);
+    border: 1px solid rgba(224,104,62,.45); }
+  .w-ghost { background: transparent; color: var(--dim); border: 1px dashed var(--line); }
+  .w-note { flex: 1 1 180px; min-height: 32px; }
+  .w-note-row { display: inline-flex; flex: 1 1 180px; align-items: center; gap: 6px; }
+  .w-note-row .w-note { flex: 1; }
+  .mic { display: inline-flex; flex: none; width: 24px; height: 24px;
+    align-items: center; justify-content: center; color: var(--dim); }
+  .mic svg { width: 16px; height: 16px; }
+  .w-hold { margin: 0; color: var(--warn); font-size: 12.5px; flex-basis: 100%; }
+  .w-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px;
+    padding-top: 8px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .w-foot-link { display: inline-flex; align-items: center; gap: 4px;
+    min-height: 24px; padding: 0 10px; border-radius: 999px;
+    border: 1px solid transparent; background: transparent; color: var(--dim);
+    font: inherit; white-space: nowrap; cursor: pointer; text-decoration: none; }
+  .w-foot-link.w-foot-ghost { border: 1px dashed var(--line); }
+  .w-foot-link.w-seen { color: var(--muted); background: var(--s3); cursor: default; }
+  .w-foot-pill { display: inline-flex; align-items: center; gap: 5px; min-height: 24px;
+    padding: 0 10px; border-radius: 999px; border: 1px solid var(--line);
+    background: transparent; color: var(--dim); font-family: var(--mono);
+    font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+  .w-foot-pill.w-foot-on { background: var(--s3); color: var(--text); }
+  .w-chip.warn { color: var(--warn); }
+  .w-list { list-style: none; }
+  .w-exc, .w-live { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+    font-size: 14px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .w-strong { color: var(--text); }
+  .w-why { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .w-who { font-family: var(--mono); font-size: 12.5px; color: var(--blue); text-decoration: none; }
+  .w-link { background: none; border: none; color: var(--text); font: inherit;
+    cursor: pointer; padding: 0; text-align: left; }
+  .w-restore { margin-left: auto; }
+  /* A face drawn below the window's own: labelled, so one page can hold
+     every surface the board draws without pretending they share a screen. */
+  .face-cap { font-family: var(--mono); font-size: 12.5px; color: var(--hot);
+    letter-spacing: .05em; margin: 34px 0 14px; padding-top: 18px; border-top: 1px solid var(--line); }
+
   .dr-scrim { position: fixed; inset: 0; background: rgba(4,5,10,.55); z-index: 40; }
   .dr {
     position: fixed; width: min(520px, calc(100% - var(--safe-right) - var(--safe-left)));
@@ -283,20 +385,271 @@
 <div class="wrap board-page">
 
   <div class="b-top">
-    <button class="b-back">&larr; back</button>
-    <span class="b-id">
+    <div class="b-crumb">
+      <button class="b-back">&larr; back</button>
       <span class="b-nm">task-board</span>
-      <span class="b-read"><b>2 waiting on you</b> &middot; 32 rows &middot; 2 running</span>
-    </span>
+    </div>
     <span class="b-spacer"></span>
     <a class="b-seat" href="./web-session.html">task-board</a>
     <a class="b-seat" href="./web-session.html">fleet</a>
     <a class="b-seat drop" href="./web-session.html">forge</a>
     <button class="b-done">done</button>
   </div>
+  <p class="b-counts">
+    <b>6 waiting on you</b>
+    <span class="b-read-counts">32 rows &middot; 2 running</span>
+  </p>
+
+  <div class="w-switch" role="tablist" aria-label="which board">
+    <button class="w-tab" role="tab" aria-selected="true">window</button>
+    <button class="w-tab" role="tab" aria-selected="false">full board</button>
+    <button class="w-tab" role="tab" aria-selected="false">archived</button>
+  </div>
+
+  <!-- The window: needs, exceptions, live, next. The front door on every
+       address this page is opened at. -->
+  <section class="w-window" aria-label="the board window">
+    <section class="w-digest" aria-label="since your last look">
+      <p class="w-digest-title">since your last look</p>
+      <ul class="w-digest-lines">
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">merged</span><span class="w-n">2</span></span></li>
+        <li class="w-digest-row">
+          <button class="w-digest-line" aria-expanded="true" aria-label="moved: 3">
+            <span class="w-digest-label">moved</span><span class="w-n">3</span><span class="w-digest-caret">-</span>
+          </button>
+          <ul class="w-list w-sample" aria-label="the moved items">
+            <li class="w-exc"><a class="w-link" href="./web-session.html">the retrofit's board window</a><span class="w-why">answered: ship it</span><span class="w-why">14:02</span></li>
+            <li class="w-exc"><span class="w-strong">the chase's cadence check</span><span class="w-why">moved to in progress</span><span class="w-why">13:41</span></li>
+          </ul>
+        </li>
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">landed</span><span class="w-n">1</span></span></li>
+        <li class="w-digest-row">
+          <button class="w-digest-line" aria-expanded="false" aria-label="expired: 1">
+            <span class="w-digest-label">expired</span><span class="w-n">1</span><span class="w-digest-caret">+</span>
+          </button>
+        </li>
+        <li class="w-digest-row">
+          <button class="w-digest-line" aria-expanded="false" aria-label="sampled: 3 of 41 agent actions">
+            <span class="w-digest-label">sampled</span><span class="w-n">3 of 41 agent actions</span><span class="w-digest-caret">+</span>
+          </button>
+        </li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="d-needs">
+      <h2 class="w-h" id="d-needs">needs you <span class="w-n">6</span></h2>
+      <div class="w-needs">
+        <article class="w-need seen">
+          <div class="w-meta">
+            <span class="w-kind">a look</span>
+            <span class="w-ctx">the retrofit's board window &middot; lead</span>
+            <span class="w-chip">seen</span>
+            <span class="w-age">waiting 1h</span>
+          </div>
+          <h3 class="w-q">Approve PR #3086 or say what to change</h3>
+          <a class="w-door" href="./web-session.html">look at <span class="nm">PR #3086</span></a>
+          <div class="w-ev">
+            <span class="b-chip blue">evidence verified</span>
+            <span class="w-ev-text">212 client tests pass; the window draws needs, exceptions, live, next</span>
+            <button class="w-more" aria-expanded="false">more</button>
+          </div>
+          <div class="w-actions">
+            <button class="w-primary">approve</button>
+            <button class="w-secondary">send back</button>
+            <!-- The note box open, with the composer's own mic beside it:
+                 every word box on the board carries one. -->
+            <span class="w-note-row">
+              <input class="b-in w-note" type="text" placeholder="what to change" aria-label="what to change (sent back with it)" />
+              <span class="mic" title="press to dictate" aria-label="dictate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg></span>
+            </span>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <button class="w-foot-link">open the row</button>
+            <span class="w-foot-link w-seen">&#10003; seen</span>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
+          </div>
+        </article>
+        <article class="w-need snoozed">
+          <div class="w-meta">
+            <span class="w-kind">decision</span>
+            <span class="w-ctx">retrofit the task board &middot; lead</span>
+            <span class="w-chip">snoozed</span>
+            <span class="w-chip">escalate at 14:02</span>
+            <span class="w-age">waiting 3h</span>
+          </div>
+          <h3 class="w-q">Ship the window with the full board one toggle away?</h3>
+          <div class="w-ev">
+            <span class="b-chip blue">evidence verified</span>
+            <span class="w-ev-text">the window drew 2 needs, 1 exception, 1 live line and 1 next row</span>
+            <button class="w-more" aria-expanded="false">more</button>
+          </div>
+          <div class="w-actions">
+            <div class="w-options" role="group" aria-label="answer with one of">
+              <button class="w-primary">ship it</button>
+              <button class="w-primary">iterate on the look first</button>
+            </div>
+            <button class="w-ghost" aria-expanded="false">add a note</button>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <button class="w-foot-link">open the row</button>
+            <button class="w-foot-link w-foot-ghost">mark seen</button>
+            <button class="w-foot-pill w-foot-on">snoozed <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
+          </div>
+        </article>
+        <article class="w-need">
+          <div class="w-meta">
+            <span class="w-kind">a look</span>
+            <span class="w-ctx">the chase's cadence check &middot; lead</span>
+            <span class="w-age">waiting 20m</span>
+          </div>
+          <h3 class="w-q">Approve the chase's cadence check or say what to change</h3>
+          <div class="w-actions">
+            <p class="w-hold">This row closes its epic: 2 child rows are still open. Close them first.</p>
+            <button class="w-secondary">send back</button>
+            <button class="w-ghost" aria-expanded="false">add a note</button>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <button class="w-foot-link">open the row</button>
+            <button class="w-foot-link w-foot-ghost">mark seen</button>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
+          </div>
+        </article>
+        <article class="w-need">
+          <div class="w-meta">
+            <span class="w-kind">exception</span>
+            <span class="w-ctx">flaky transport test &middot; reviewer</span>
+            <span class="w-chip">expire at 18:00</span>
+            <span class="w-age">waiting 4h</span>
+          </div>
+          <h3 class="w-q">The transport test failed twice on a cold target; how should the run go on?</h3>
+          <div class="w-actions">
+            <div class="w-options" role="group" aria-label="dispose of it">
+              <button class="w-primary">retry</button>
+              <button class="w-primary">rescope</button>
+              <button class="w-primary">drop</button>
+              <button class="w-primary">diagnose</button>
+            </div>
+            <button class="w-ghost" aria-expanded="false">add a note</button>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <button class="w-foot-link">open the row</button>
+            <button class="w-foot-link w-foot-ghost">mark seen</button>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
+          </div>
+        </article>
+        <article class="w-need">
+          <div class="w-meta">
+            <span class="w-kind">clarification</span>
+            <span class="w-ctx">seed the look's data &middot; lead</span>
+            <span class="w-chip warn">seen, forgotten</span>
+            <span class="w-age">waiting 2h</span>
+          </div>
+          <h3 class="w-q">Which store should the window draw from?</h3>
+          <div class="w-actions">
+            <button class="w-ghost" aria-expanded="false">answer in your words</button>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <button class="w-foot-link">open the row</button>
+            <span class="w-foot-link w-seen">&#10003; seen</span>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
+          </div>
+        </article>
+        <article class="w-need">
+          <div class="w-meta">
+            <span class="w-kind">teaching</span>
+            <span class="w-ctx">push before the full suite &middot; lead</span>
+            <span class="w-chip" title="the class a teaching settles">pre-push-suite</span>
+            <span class="w-chip">reask at 16:02</span>
+            <span class="w-age">waiting 1h</span>
+          </div>
+          <h3 class="w-q">Why does a push keep landing before the suite has run?</h3>
+          <div class="w-actions">
+            <button class="w-ghost" aria-expanded="false">write the lesson</button>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <button class="w-foot-link">open the row</button>
+            <button class="w-foot-link w-foot-ghost">mark seen</button>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="d-exc">
+      <h2 class="w-h" id="d-exc">exceptions <span class="w-n">2</span></h2>
+      <ul class="w-list">
+        <li class="w-exc"><button class="w-link">fold the session rail</button>
+          <span class="w-why">no change since 19:36</span></li>
+        <li class="w-exc"><span class="w-strong">reviewer</span>
+          <span class="w-why">holds no row since 17:08 - feed it or despawn it</span></li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="d-live">
+      <h2 class="w-h" id="d-live">live <span class="w-n">1</span></h2>
+      <ul class="w-list">
+        <li class="w-live"><a class="w-who" href="./web-session.html">lead</a>
+          <span class="w-strong">fold the session rail</span>
+          <span class="w-why">since unknown</span>
+          <span class="w-why">nothing touched yet</span>
+          <span class="w-why">next 2h</span>
+          <span class="w-why">and 1 more held</span></li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="d-next">
+      <h2 class="w-h" id="d-next">next <span class="w-n">3</span></h2>
+      <ol class="w-list">
+        <li><button class="w-link">write the archive toggle's test</button> <span class="w-why">2h</span></li>
+        <li><button class="w-link">watch the live board</button> <span class="w-why">standing &middot; every 1d</span></li>
+        <li><button class="w-link">draw the chase's cadence check</button> <span class="w-why">1d</span></li>
+      </ol>
+    </section>
+  </section>
+
+  <div class="face-cap">the window when nothing needs the reader: the all-clear is a claim with its evidence</div>
+
+  <section class="w-window" aria-label="the board window with nothing waiting">
+    <section class="w-digest" aria-label="since your last look">
+      <p class="w-digest-title">since your last look</p>
+      <ul class="w-digest-lines">
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">merged</span><span class="w-n">2</span></span></li>
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">moved</span><span class="w-n">3</span></span></li>
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">landed</span><span class="w-n">1</span></span></li>
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">expired</span><span class="w-n">0</span></span></li>
+        <li class="w-digest-row">
+          <button class="w-digest-line" aria-expanded="true" aria-label="sampled: 3 of 41 agent actions">
+            <span class="w-digest-label">sampled</span><span class="w-n">3 of 41 agent actions</span><span class="w-digest-caret">-</span>
+          </button>
+          <ul class="w-list w-sample" aria-label="the sampled agent actions">
+            <li class="w-exc"><span class="w-strong">builder</span>
+              <span class="w-why">Bash</span>
+              <span class="w-why">cargo nextest run -p forge-workspace</span>
+              <span class="w-why">13:42</span></li>
+            <li class="w-exc"><span class="w-strong">reviewer</span>
+              <span class="w-why">Read</span>
+              <span class="w-why">crates/forge-server/src/transport/wire.rs</span>
+              <span class="w-why">13:40</span></li>
+          </ul>
+        </li>
+      </ul>
+    </section>
+    <section aria-labelledby="d-needs-empty">
+      <h2 class="w-h" id="d-needs-empty">needs you</h2>
+      <p class="w-claim">nothing needs you - checked 13:48 &middot; 2 agents ran &middot; sampled 3 of 41 agent actions</p>
+    </section>
+  </section>
+
+  <div class="face-cap">the full board, one toggle away</div>
 
   <section class="b-you" aria-label="waiting on you">
-    <h2>waiting on you <span class="b-n">2</span></h2>
+    <h2>waiting on you <span class="b-n">5</span></h2>
     <div class="b-asks">
       <div class="b-ask">
         <div class="b-q">your look: the lanes read right at both widths</div>
@@ -306,7 +659,7 @@
         <div class="b-detail"><a class="b-door" href="./web-board.html">look at <span class="nm">the board page</span></a></div>
         <div class="b-do">
           <button class="b-btn b-ok">approve</button>
-          <input class="b-in" placeholder="what to change" aria-label="what to change (sent back with it)">
+          <span class="w-note-row"><input class="b-in w-note" placeholder="what to change" aria-label="what to change (sent back with it)"><span class="mic" title="press to dictate" aria-label="dictate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg></span></span>
           <button class="b-btn b-no">send back</button>
         </div>
       </div>
@@ -314,9 +667,42 @@
         <div class="b-q">the sliver: reproduce first, or draw none?</div>
         <div class="b-why"><span>the rail's defects</span></div>
         <div class="b-why"><span>steward</span><span>2h</span></div>
+        <!-- A decision's door is its enumerated options, never a words box. -->
         <div class="b-do">
-          <input class="b-in" placeholder="your answer">
+          <button class="b-btn b-plain">reproduce first</button>
+          <button class="b-btn b-plain">draw none</button>
+        </div>
+      </div>
+      <div class="b-ask">
+        <div class="b-q">the cold-target transport test: retry, rescope, drop or diagnose?</div>
+        <div class="b-why"><span>the retrofit's gates</span></div>
+        <div class="b-why"><span>reviewer</span><span>4h</span></div>
+        <!-- An exception's door is its four disposals. -->
+        <div class="b-do">
+          <button class="b-btn b-plain">retry</button>
+          <button class="b-btn b-plain">rescope</button>
+          <button class="b-btn b-plain">drop</button>
+          <button class="b-btn b-plain">diagnose</button>
+        </div>
+      </div>
+      <div class="b-ask">
+        <div class="b-q">which store should the window draw from?</div>
+        <div class="b-why"><span>the retrofit's look</span></div>
+        <div class="b-why"><span>lead</span><span>2h</span></div>
+        <!-- A clarification's door is the reader's own words. -->
+        <div class="b-do">
+          <span class="w-note-row"><input class="b-in w-note" placeholder="your answer" aria-label="your answer"><span class="mic" title="press to dictate" aria-label="dictate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg></span></span>
           <button class="b-btn b-plain">answer</button>
+        </div>
+      </div>
+      <div class="b-ask">
+        <div class="b-q">why does a push keep landing before the suite has run?</div>
+        <div class="b-why"><span>the retrofit's board</span></div>
+        <div class="b-why"><span>lead</span><span>1h</span></div>
+        <!-- A teaching's door is the lesson it settles its class with. -->
+        <div class="b-do">
+          <span class="w-note-row"><input class="b-in w-note" placeholder="the lesson" aria-label="the lesson that settles the class"><span class="mic" title="press to dictate" aria-label="dictate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg></span></span>
+          <button class="b-btn b-plain">settle the class</button>
         </div>
       </div>
     </div>
@@ -334,7 +720,7 @@
         </div>
         <div class="b-meta">
           <span class="b-meta"><span class="b-muted">unclaimed</span></span>
-          <span class="b-chips"><span class="b-chip dim">no movement 5h</span></span>
+          <span class="b-chips"><span class="b-chip dim">no change 5h</span></span>
         </div>
         <div class="b-last">
           <span class="b-prog"><span class="b-time">worked 0s</span></span>
@@ -493,7 +879,7 @@
           <span class="b-owner"><span class="b-ava">F</span>fleet</span>
           <span class="b-chips">
             <span class="b-chip warn">waiting on you</span>
-            <span class="b-chip bad">overdue</span>
+            <span class="b-chip bad">waiting 3h</span>
           </span>
         </div>
         <div class="b-last">
@@ -521,7 +907,7 @@
           <span class="b-owner"><span class="b-ava">F</span>forge</span>
           <button class="b-chip blue b-epic-pill">&#8627; the board walk</button>
           <a href="#">spec</a><a href="#">#1886</a>
-          <span class="b-chips"><span class="b-chip dim">attempt 1</span></span>
+          <span class="b-chips"><span class="b-chip dim">no change 4h</span></span>
         </div>
         <div class="b-last">
           <span class="b-prog">
@@ -554,260 +940,6 @@
       </article>
     </section>
 
-    <section class="b-lane" data-state="completed">
-      <div class="b-cap"><span class="b-lane-nm">Completed</span><span class="b-count">6</span><span class="b-rule"></span></div>
-      <article class="b-card epic">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled">
-            <span class="b-line">release 1.1.2</span>
-          </span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>forge</span>
-          <span class="b-chip blue b-epic-pill">&#9636; epic</span>
-          <span class="b-chips">
-            <span class="b-chip">5/5 done</span>
-            <span class="b-chip blue">to close</span>
-          </span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog">
-            <span class="b-time">worked 1d 1h / 1d</span>
-            <span class="b-bar"><span class="b-fill" style="width:100%"></span></span>
-          </span>
-          <span class="b-wrote">wrote 3d ago</span>
-          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled"><span class="b-line">the lanes wrap at 430</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">S</span>steward</span>
-          <span class="b-chips"><span class="b-chip blue">lead attested</span></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 3h</span></span>
-          <span class="b-wrote">wrote 2d ago</span>
-          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled"><span class="b-line">the strip answers a question</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">A</span>asker</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 1h</span></span>
-          <span class="b-wrote">wrote 2d ago</span>
-          <span class="b-acts"><button class="b-pick">asker &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled"><span class="b-line">the owner picker opens on the card</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">H</span>hand</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 40m</span></span>
-          <span class="b-wrote">wrote 1d ago</span>
-          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled"><span class="b-line">the drawing is held against the page</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>forge</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 20m</span></span>
-          <span class="b-wrote">wrote 12h ago</span>
-          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
-        </div>
-      </article>
-      <button class="b-fold" aria-expanded="false">show all (6)</button>
-    </section>
-
-    <section class="b-lane" data-state="failed">
-      <div class="b-cap"><span class="b-lane-nm">Failed</span><span class="b-count">6</span><span class="b-rule"></span></div>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub">
-            <span class="b-line">the spike that ended in error</span>
-          </span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">P</span>probe</span>
-          <a href="#">#1839</a>
-          <span class="b-chips"><span class="b-chip bad">owner gone</span></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog">
-            <span class="b-time">worked 1d 2h / 2d</span>
-            <span class="b-bar"><span class="b-fill" style="width:75%"></span></span>
-          </span>
-          <span class="b-wrote">wrote 1d ago</span>
-          <span class="b-acts"><button class="b-pick">probe &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub"><span class="b-line">the retry that kept timing out</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">H</span>hand</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 6h</span></span>
-          <span class="b-wrote">wrote 2d ago</span>
-          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub"><span class="b-line">the batch that ate the store</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>forge</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 2h</span></span>
-          <span class="b-wrote">wrote 2d ago</span>
-          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub"><span class="b-line">the probe against a dead port</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">P</span>probe</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 12m</span></span>
-          <span class="b-wrote">wrote 3d ago</span>
-          <span class="b-acts"><button class="b-pick">probe &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub"><span class="b-line">the migration that reversed twice</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">S</span>steward</span>
-          <span class="b-chips"><span class="b-chip dim">attempt 2</span></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 3h</span></span>
-          <span class="b-wrote">wrote 3d ago</span>
-          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
-        </div>
-      </article>
-      <button class="b-fold" aria-expanded="false">show all (6)</button>
-    </section>
-
-    <section class="b-lane" data-state="canceled">
-      <div class="b-cap"><span class="b-lane-nm">Canceled</span><span class="b-count">6</span><span class="b-rule"></span></div>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the second editor nobody asked for</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">S</span>steward</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 2h</span></span>
-          <span class="b-wrote">wrote 4d ago</span>
-          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the theme pass that lost the mock</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">H</span>hand</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 4h</span></span>
-          <span class="b-wrote">wrote 4d ago</span>
-          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the flag the core never read</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>fleet</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 1h</span></span>
-          <span class="b-wrote">wrote 5d ago</span>
-          <span class="b-acts"><button class="b-pick">fleet &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the tour that duplicated the home</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">A</span>asker</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 3h</span></span>
-          <span class="b-wrote">wrote 5d ago</span>
-          <span class="b-acts"><button class="b-pick">asker &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the shortcut that ate Escape</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">T</span>task-board</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 30m</span></span>
-          <span class="b-wrote">wrote 6d ago</span>
-          <span class="b-acts"><button class="b-pick">task-board &#9662;</button></span>
-        </div>
-      </article>
-      <button class="b-fold" aria-expanded="false">show all (6)</button>
-    </section>
   </div>
 
   <div class="b-create">
@@ -815,6 +947,20 @@
     <button class="b-pick">no epic &#9662;</button>
     <button class="b-btn b-add">+ add</button>
   </div>
+
+  <div class="face-cap">the archive, one toggle away</div>
+
+  <ul class="w-list" aria-label="closed rows">
+    <li class="w-exc"><button class="w-link">rate the chase's cadence</button>
+      <span class="w-why">completed</span>
+      <span class="w-why">closed, not yet archived</span>
+      <button class="b-btn b-plain w-restore">restore</button></li>
+    <li class="w-exc"><button class="w-link">the lanes wrap at 430</button>
+      <span class="w-why">completed</span>
+      <span class="w-why">lead attested</span>
+      <span class="w-why">archived 09:12</span>
+      <button class="b-btn b-plain w-restore">restore</button></li>
+  </ul>
 
   <!-- The row's own page, which a click opens: what the row is, what it is
        waiting on - answerable here - and where it has been. -->
@@ -845,8 +991,8 @@
           <span class="l">In progress &middot; the strip's counts</span>
           <span class="go" aria-hidden="true">&rarr;</span>
         </button>
-        <button class="dr-kid" aria-label="jump to Completed &middot; the lanes wrap at 430">
-          <span class="l">Completed &middot; the lanes wrap at 430</span>
+        <button class="dr-kid" aria-label="jump to Backlog &middot; the strip answers a question">
+          <span class="l">Backlog &middot; the strip answers a question</span>
           <span class="go" aria-hidden="true">&rarr;</span>
         </button>
       </div>

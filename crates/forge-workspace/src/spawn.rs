@@ -171,6 +171,33 @@ pub(crate) fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
     settings.charter = Some(DEFAULT_LEAD_CHARTER.to_owned());
 }
 
+/// Append the project's policy notes to a lead's charter - the lessons a
+/// teaching's answer recorded, one per class. **They are read at spawn**:
+/// a note written after a lead's spawn reaches that lead at its next spawn
+/// or through its own `tasks__policy` read, never in a running prompt.
+pub(crate) fn append_policy_notes(
+    settings: &mut SessionLaunchSettings,
+    notes: &[crate::store::policy::PolicyNote],
+) {
+    use std::fmt::Write as _;
+    if notes.is_empty() {
+        return;
+    }
+    let Some(charter) = settings.charter.as_mut() else { return };
+    charter.push_str(
+        "\n\n## The project's policy notes\n\n\
+         A teaching's lesson is recorded here for its class. These are the user's own \
+         rules: the drive will not raise an ask a note settles, so read them before you \
+         ask.\n",
+    );
+    for note in notes {
+        // Writing into a String cannot fail; the ignored result is the
+        // alternative to a `push_str(&format!(...))` the lint refuses.
+        let _ = write!(charter, "\n- **{}**: {}", note.class, note.text);
+    }
+    charter.push('\n');
+}
+
 /// Stamp the project's `permission_mode` into the launch settings'
 /// `permissions.defaultMode`, where the existing
 /// `applied_permission_mode` arm in `forge_sdk_worker` picks it up;
@@ -265,6 +292,7 @@ fn spawn_project_inner(
     };
 
     apply_lead_charter(&mut launch_settings);
+    append_policy_notes(&mut launch_settings, &workspace.policy_notes_for_project(project_name));
 
     // The id this lead will run under, resolved before the spawn so the
     // bucket announced here is the bucket the child connects under.
@@ -10571,6 +10599,38 @@ mod lead_charter_tests {
         assert_eq!(settings.charter.as_deref(), Some("pre-existing"));
     }
 
+    /// A teaching's lesson reaches the project's next lead: the notes are
+    /// appended to the charter at spawn, one per class, and an empty set
+    /// adds no empty section.
+    #[test]
+    fn a_leads_charter_carries_the_projects_policy_notes() {
+        let mut settings = SessionLaunchSettings::default();
+        apply_lead_charter(&mut settings);
+        let note = crate::store::policy::PolicyNote {
+            id: "n1".to_owned(),
+            project_name: "forge".to_owned(),
+            class: "pre-push-suite".to_owned(),
+            text: "run the full suite before pushing".to_owned(),
+            source_task: "t-1".to_owned(),
+            at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        append_policy_notes(&mut settings, std::slice::from_ref(&note));
+        let charter = settings.charter.expect("the lead keeps its charter");
+        assert!(charter.contains("## The project's policy notes"), "the section is named");
+        assert!(
+            charter.contains("- **pre-push-suite**: run the full suite before pushing"),
+            "the note is read as its own rule: {charter}",
+        );
+
+        let mut bare = SessionLaunchSettings::default();
+        apply_lead_charter(&mut bare);
+        append_policy_notes(&mut bare, &[]);
+        assert!(
+            !bare.charter.expect("charter").contains("policy notes"),
+            "an empty set adds no section",
+        );
+    }
+
     /// An epic with no user look closes on its children being delivered,
     /// not merged: a child completes when its deliverable is out, so a
     /// "merged" here would wait on a merge the board's completion never
@@ -10857,33 +10917,31 @@ mod lead_charter_tests {
     /// when it is merged" would reproduce the 36-completed-rows board the
     /// tool text was fixed to prevent.
     #[test]
-    fn the_charter_carries_the_landing_rule() {
-        for (clause, why) in [
-            (
-                "a landed row with no children and no epic above it is deleted in the same \
-                 pass (`tasks__delete`), never left completed, while a landed row under an \
-                 epic - open or already terminal - is completed and left terminal, because \
-                 the epic reads `to close` only once every child is terminal (a verify=user \
-                 child parks in waiting on the user and counts only once the user approves)",
-                "the row-true bullet carries the delete and its epic carve-out together",
-            ),
-            (
-                "`tasks__delete` clears a row created in error, and a landed row with no \
-                 children and no epic above it - never a child of an open epic, whose terminal \
-                 state its epic's close depends on",
-                "the close-epics bullet states what the delete is for",
-            ),
-            (
-                "completing the ROOT row closes it and archives the tree",
-                "the archive that closes an epic is pinned, so the carve-out's close signal \
-                 has an action behind it",
-            ),
-        ] {
-            assert!(
-                DEFAULT_LEAD_CHARTER.contains(clause),
-                "the lead charter does not carry the landing rule ({why}): {clause}",
-            );
-        }
+    fn the_charter_points_at_the_tools_for_the_landing_rule() {
+        // **One shipped statement, not two.** The delete-on-landing rule and
+        // its epic carve-out live in the `tasks__update` and `tasks__delete`
+        // descriptions, where a caller meets them at the moment it acts; a
+        // test beside those pins the clauses. The charter carries the pointer
+        // and the lead's own obligation, and restating the mechanics here is
+        // the drift this test forbids.
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("**The `tasks__*` tool descriptions are the board's rules.**"),
+            "the charter names the tool descriptions as the board's rules",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("state the completion's evidence before the row lands"),
+            "the charter keeps the lead's obligation to end a row with its evidence",
+        );
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("is deleted in the same pass"),
+            "the charter restates the delete-on-landing rule the tools own",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("completing the ROOT row closes it and archives the tree"),
+            "the close-epics bullet keeps the archive that closes an epic",
+        );
     }
 
     /// Every client text box takes dictation, and a lead planning client
@@ -10939,9 +10997,10 @@ mod lead_charter_tests {
     #[test]
     fn the_charter_keeps_the_user_decision_mint_with_the_lead() {
         for clause in [
-            "Only you mint a `verify: user` gate or a `kind: decision` wait",
+            "Only you mint a `verify: user` gate or a `kind: user` wait",
             "a worker hands the ask to you instead",
-            "A decision wait a worker parks outlives its answer and you cannot close it afterward",
+            "A user wait a worker parks outlives its answer and you cannot close it afterward",
+            "Acknowledge and snooze are the user's own acts on the board",
         ] {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(clause),
@@ -11195,7 +11254,7 @@ mod lead_charter_tests {
         );
         assert!(
             DEFAULT_LEAD_CHARTER
-                .contains("a look they should give when they return (the board's decision wait)"),
+                .contains("a look they should give when they return (the board's user wait)"),
             "the at-convenience look is pinned beside the hold",
         );
         assert!(
@@ -11269,7 +11328,7 @@ mod lead_charter_tests {
     fn lead_charter_carries_the_backlog_rule() {
         for clause in [
             "a ready row is a dispatch candidate, not work already queued to start",
-            "Dispatch is your act: keep the row owned (the sweep dispatches only unowned rows) \
+            "Dispatch is your act: keep the row owned (the drive speaks about unowned work) \
              to set it aside",
         ] {
             assert!(
@@ -11291,14 +11350,17 @@ mod lead_charter_tests {
     /// advice sits above that section, so the scan leaves it alone.
     #[test]
     fn the_charter_carries_the_board_sweep() {
-        const SWEEP: &str = "**Sweep the board at the start of every session, when forge injects \
-             a sweep (it does when you have been idle, at most once every two hours, or six \
-             hours after the last sweep), and on demand.** First `cron__list` and delete any \
-             sweep cron an older version of this charter had you create (`cron__delete`) - it \
-             keeps firing its sweep prompt into this session until it is removed. Never create a \
-             standing sweep cron. End every sweep with the next three lead-owned backlog rows, \
-             each with one line on why it comes next; they are proposals, not dispatches, and \
-             only you start a worker on one.";
+        const SWEEP: &str = "**Sweep the board at the start of every session, when the drive \
+             nudges you, and on demand.** The drive speaks when you have stopped with work on \
+             the board - a row you hold in progress, ready and unowned work, a row blocked on \
+             one of yours, or a live worker holding nothing - carrying those facts and one ask: \
+             continue, hand off, or say why not. It never speaks for a project whose only claim \
+             on you is a wait on the user. First `cron__list` and delete any sweep cron an older \
+             version of this charter had you create (`cron__delete`) - it keeps firing its sweep \
+             prompt into this session until it is removed. Never create a standing sweep cron. \
+             End every sweep with the next three lead-owned backlog rows, each with one line on \
+             why it comes next; they are proposals, not dispatches, and only you start a worker \
+             on one.";
         const CLEANUP: &str = "First `cron__list` and delete any sweep cron an older version of \
              this charter had you create (`cron__delete`)";
         const REASON: &str =
@@ -11328,12 +11390,19 @@ mod lead_charter_tests {
             (CLEANUP, "the old standing entry is removed, not only forbidden"),
             (REASON, "the reason the cleanup is owed"),
             (
-                "when forge injects a sweep (it does when you have been idle, at most once every \
-                 two hours, or six hours after the last sweep)",
-                "the injected trigger, its throttle and its six-hour fallback",
+                "when you have stopped with work on the board - a row you hold in progress, \
+                 ready and unowned work, a row blocked on one of yours, or a live worker \
+                 holding nothing",
+                "the drive's four triggers",
             ),
-            ("at most once every two hours", "the idle throttle"),
-            ("six hours after the last sweep", "the fallback is measured from the last sweep"),
+            (
+                "It never speaks for a project whose only claim on you is a wait on the user",
+                "a wait on the user is never chased",
+            ),
+            (
+                "carrying those facts and one ask: continue, hand off, or say why not",
+                "the nudge's content and its one ask",
+            ),
             ("End every sweep with the next three lead-owned backlog rows", "the next-pick rule"),
             ("each with one line on why it comes next", "each pick says why it comes next"),
             ("they are proposals, not dispatches", "a pick is not a dispatch"),

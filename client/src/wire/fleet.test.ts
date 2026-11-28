@@ -217,6 +217,9 @@ const NOT_NEWS: readonly string[] = [
   'subagents_changed',
   'subagent_cards_changed',
   'file_index_changed',
+  // One row read whole for the board's drawer: the board subject draws it,
+  // and no home row carries a brief or a history.
+  'task_detail',
   'service_status',
   'plugins_inventory_updated',
   'plugins_inventory_refresh_failed',
@@ -544,11 +547,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 82 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 83 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(82);
+    ).toBe(83);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );

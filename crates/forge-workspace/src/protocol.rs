@@ -651,12 +651,44 @@ pub enum Command {
         approve: bool,
         words: Option<String>,
     },
-    /// The user answers a row waiting on a question: the words go into
-    /// the detail, the row resumes in progress, and its owner hears once.
+    /// The user answers a row waiting on a question: `choice` is the
+    /// value the ask's kind needed - a decision's `choice`, a
+    /// clarification's `text`, an exception's `disposition`, a teaching's
+    /// `text` plus its `lesson` - and `words` the note they left. The
+    /// answer is stored as the row's request record, the row resumes in
+    /// progress, and its owner hears once.
     TaskAnswer {
         project: String,
         id: String,
+        #[serde(default)]
+        choice: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        disposition: Option<String>,
+        #[serde(default)]
+        lesson: Option<String>,
+        #[serde(default)]
         words: String,
+    },
+    /// The person marked the ask seen without answering it. **The person's
+    /// own act, and only theirs**: no agent tool acknowledges on their
+    /// behalf.
+    TaskAck {
+        project: String,
+        id: String,
+    },
+    /// The person deferred the ask until a duration from now ("2h"), or
+    /// "activity" - until the row next moves.
+    TaskSnooze {
+        project: String,
+        id: String,
+        until: String,
+    },
+    /// The person opened the project's board window (or answered an ask):
+    /// the since-last-look stamp the digest strip reads.
+    BoardSeen {
+        project: String,
     },
     /// The user moves a row in its queue.
     TaskRank {
@@ -699,6 +731,22 @@ pub enum Command {
         project: String,
         id: String,
         reserved: bool,
+    },
+    /// The user takes a row back off the archive: it and the tree it took
+    /// return to the live set, terminal, so a reopen or a move can reach
+    /// it again.
+    TaskRestore {
+        project: String,
+        id: String,
+    },
+    /// A view asks for one row whole: its brief and its history, which the
+    /// board's bulk read leaves out so a wide board stays light. The answer
+    /// is a `task_detail` update, and an id naming nothing answers with
+    /// nothing rather than an error - a row can close between a read and
+    /// the ask.
+    TaskDetail {
+        project: String,
+        id: String,
     },
     /// Cross-project delivery (#114 v1). Dispatched by the
     /// `mcp__forge__agents__send_message` tool impl via
@@ -1077,12 +1125,17 @@ impl Command {
             | Self::SubmitReview { .. }
             | Self::TaskVerdict { .. }
             | Self::TaskAnswer { .. }
+            | Self::TaskAck { .. }
+            | Self::TaskSnooze { .. }
+            | Self::BoardSeen { .. }
             | Self::TaskRank { .. }
             | Self::TaskAssign { .. }
             | Self::TaskCreate { .. }
             | Self::TaskMove { .. }
             | Self::TaskReopen { .. }
             | Self::TaskReserve { .. }
+            | Self::TaskRestore { .. }
+            | Self::TaskDetail { .. }
             | Self::PluginInstall { .. }
             | Self::PluginUpdate { .. }
             | Self::PluginUpdateAll
@@ -1360,6 +1413,18 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("id", id)
                 .finish_non_exhaustive(),
+            Self::TaskAck { project, id } => {
+                f.debug_struct("TaskAck").field("project", project).field("id", id).finish()
+            }
+            Self::TaskSnooze { project, id, until } => f
+                .debug_struct("TaskSnooze")
+                .field("project", project)
+                .field("id", id)
+                .field("until", until)
+                .finish(),
+            Self::BoardSeen { project } => {
+                f.debug_struct("BoardSeen").field("project", project).finish()
+            }
             Self::TaskRank { project, id, to } => f
                 .debug_struct("TaskRank")
                 .field("project", project)
@@ -1394,6 +1459,16 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("id", id)
                 .field("reserved", reserved)
+                .finish_non_exhaustive(),
+            Self::TaskRestore { project, id } => f
+                .debug_struct("TaskRestore")
+                .field("project", project)
+                .field("id", id)
+                .finish_non_exhaustive(),
+            Self::TaskDetail { project, id } => f
+                .debug_struct("TaskDetail")
+                .field("project", project)
+                .field("id", id)
                 .finish_non_exhaustive(),
             Self::PluginInstall { plugin_id, scope, project } => f
                 .debug_struct("PluginInstall")
@@ -1927,6 +2002,18 @@ pub enum SessionUpdate {
     TasksChanged {
         key: SessionSlot,
         tasks: Vec<forge_primitives::tasks::Task>,
+    },
+    /// One row read whole, answering a `TaskDetail` command: the record
+    /// with its brief and its history, which the board's bulk read leaves
+    /// out so a wide board stays light. `row` is `None` when the id names
+    /// nothing live or archived. `key` is the project's lead seat, as the
+    /// board's own announcements are. **Boxed** because a row now carries
+    /// its ask and its wait, and this enum's other variants are a few dozen
+    /// bytes: serde writes a box transparently, so the wire is unchanged.
+    TaskDetail {
+        key: SessionSlot,
+        project: String,
+        row: Option<Box<crate::board::BoardRow>>,
     },
     /// The project's schedules moved, as the whole set the core holds.
     ///
@@ -2555,6 +2642,7 @@ impl SessionUpdate {
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
             | Self::TasksChanged { key, .. }
+            | Self::TaskDetail { key, .. }
             | Self::CronSchedulesChanged { key, .. }
             | Self::ConnectorSubscriptionsChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
@@ -2724,6 +2812,12 @@ impl std::fmt::Debug for SessionUpdate {
             Self::WorkChanged { key, .. } => {
                 f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
+            Self::TaskDetail { key, project, row } => f
+                .debug_struct("TaskDetail")
+                .field("key", key)
+                .field("project", project)
+                .field("found", &row.is_some())
+                .finish(),
             Self::TasksChanged { key, tasks } => f
                 .debug_struct("TasksChanged")
                 .field("key", key)
@@ -3881,6 +3975,10 @@ mod workers_command_tests {
             Command::TaskAnswer {
                 project: "p".to_owned(),
                 id: "t".to_owned(),
+                choice: None,
+                text: None,
+                disposition: None,
+                lesson: None,
                 words: "w".to_owned(),
             },
             Command::TaskRank { project: "p".to_owned(), id: "t".to_owned(), to: RankMove::Top },

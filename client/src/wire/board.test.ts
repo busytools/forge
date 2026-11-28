@@ -3,7 +3,14 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { repoPath } from '../repo';
-import { BOARD_VARIANTS, boardFrom, coversBoard, type BoardWire } from './board';
+import {
+  BOARD_VARIANTS,
+  applyDetail,
+  boardFrom,
+  carryDetail,
+  coversBoard,
+  type BoardWire,
+} from './board';
 import type { SessionSlot } from './types';
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -127,7 +134,7 @@ describe('the task fields the board marks', () => {
         at: { secs_since_epoch: 1, nanos_since_epoch: 0 },
       },
       reserved: 'user',
-      waiting_on: { kind: 'decision', detail: null, on: null, verification: false, parked: true },
+      waiting_on: { kind: 'user', detail: null, on: null, verification: false, parked: true },
     });
     const attested = task['attested'] as { evidence?: string } | null;
     expect(attested?.evidence, 'the quoted approval reached the row').toBe('Looks right - merge');
@@ -144,11 +151,150 @@ describe('the task fields the board marks', () => {
       project_name: 'proj',
       subject: 'an older row',
       status: 'waiting',
-      waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+      waiting_on: { kind: 'user', detail: null, on: null, verification: false },
     });
     expect(task['attested']).toBeNull();
     expect(task['reserved']).toBeNull();
     const wait = task['waiting_on'] as { parked?: boolean } | null;
     expect(wait?.parked, 'an older server sent no parked flag').toBe(false);
+  });
+});
+
+/**
+ * The drawer's own read: the bulk board carries the window's fields only, so
+ * a `task_detail` frame lands here - one row whole, with its brief and its
+ * history - and replaces what the bulk read said about it.
+ */
+describe("the drawer's row", () => {
+  function row(over: Record<string, unknown>, history: unknown[] = []): Record<string, unknown> {
+    return {
+      task: {
+        id: 't-1',
+        project_name: 'proj',
+        subject: 'the row',
+        status: 'in_progress',
+        links: [],
+        created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        ...over,
+      },
+      worked_secs: 0,
+      updated_secs_ago: 0,
+      owner_live: true,
+      marks: { ready: false, in_review: false, overdue: false, stale: false, to_close: false },
+      rollup: null,
+      parent_subject: null,
+      history,
+      history_total: history.length,
+    };
+  }
+
+  /** The narrowing answers this fixture; a null would be the fixture stale. */
+  const narrowed = (data: unknown): BoardWire => {
+    const out = boardFrom(data as BoardWire);
+    if (out === null) throw new Error('the fixture is not a board record');
+    return out;
+  };
+  const wire = (): BoardWire =>
+    narrowed({
+      projects: [
+        {
+          project: { org: 'TestOrg', name: 'proj' },
+          rows: [row({})],
+          crons: [],
+          connectors: { gotify: [], slack: [] },
+        },
+      ],
+    });
+
+  it('replaces the bulk row with the whole record', () => {
+    const step = {
+      task_id: 't-1',
+      project_name: 'proj',
+      from: 'pending',
+      to: 'in_progress',
+      at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+      by: 'system',
+    };
+    const applied = applyDetail(
+      wire(),
+      { org: 'TestOrg', name: 'proj' },
+      row({ detail: 'the brief the drawer reads' }, [step]),
+    );
+    const held = applied?.projects[0]?.rows[0];
+    expect(held?.task.detail).toBe('the brief the drawer reads');
+    expect(held?.history, 'the history rode the frame').toHaveLength(1);
+    expect(applied?.projects[0]?.rows, 'the row was replaced, not duplicated').toHaveLength(1);
+  });
+
+  it('keeps a closed row out of the lanes, in the drawer set, and a null answer changes nothing', () => {
+    const closed = applyDetail(
+      wire(),
+      { org: 'TestOrg', name: 'proj' },
+      row({ id: 't-9', subject: 'an ended row', status: 'completed' }),
+    );
+    expect(closed?.projects[0]?.rows, 'a closed row stays out of the lanes').toHaveLength(1);
+    // The shelf's subject asks for the closed row whole; the page's drawer
+    // draws it from this set, since the bulk read never carries it.
+    expect(closed?.projects[0]?.detail?.map((entry) => entry.task.id)).toEqual(['t-9']);
+    expect(applyDetail(wire(), { org: 'TestOrg', name: 'proj' }, null)).toBeNull();
+  });
+
+  it('carries the drawer set across a whole read, and keeps it over a stripped live row', () => {
+    const first = applyDetail(
+      wire(),
+      { org: 'TestOrg', name: 'proj' },
+      row({ id: 't-9', subject: 'an ended row', status: 'completed' }),
+    );
+    const reread = wire();
+    const carried = carryDetail(first, reread);
+    expect(
+      carried.projects[0]?.detail?.map((entry) => entry.task.id),
+      "a whole read never carries the drawer's rows, and must not drop them",
+    ).toEqual(['t-9']);
+    // A bulk read that carries the row only as a window copy - no brief, no
+    // history - must not shadow the whole copy the drawer holds.
+    const stripped = narrowed({
+      projects: [
+        {
+          project: { org: 'TestOrg', name: 'proj' },
+          rows: [row({ id: 't-9', status: 'in_progress' })],
+          crons: [],
+          connectors: { gotify: [], slack: [] },
+        },
+      ],
+    });
+    expect(
+      carryDetail(first, stripped).projects[0]?.detail?.map((entry) => entry.task.id),
+      'the stripped live copy left the drawer without its brief',
+    ).toEqual(['t-9']);
+    // A live copy that is itself WHOLE is the fresher one: the detail copy
+    // steps aside.
+    const liveAgain = narrowed({
+      projects: [
+        {
+          project: { org: 'TestOrg', name: 'proj' },
+          rows: [row({ id: 't-9', status: 'in_progress', detail: 'the brief' })],
+          crons: [],
+          connectors: { gotify: [], slack: [] },
+        },
+      ],
+    });
+    expect(carryDetail(first, liveAgain).projects[0]?.detail).toEqual([]);
+  });
+
+  it('updates a drawer row in place rather than growing the set', () => {
+    const first = applyDetail(
+      wire(),
+      { org: 'TestOrg', name: 'proj' },
+      row({ id: 't-9', subject: 'an ended row', status: 'completed', detail: 'first' }),
+    );
+    const next = applyDetail(
+      first,
+      { org: 'TestOrg', name: 'proj' },
+      row({ id: 't-9', subject: 'an ended row', status: 'completed', detail: 'second' }),
+    );
+    expect(next?.projects[0]?.detail, 'one entry per row').toHaveLength(1);
+    expect(next?.projects[0]?.detail?.[0]?.task.detail).toBe('second');
   });
 });

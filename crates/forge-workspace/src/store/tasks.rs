@@ -45,7 +45,15 @@ struct TaskRecord {
     #[serde(default)]
     links: Vec<TaskLink>,
     #[serde(default)]
-    attempt: u32,
+    evidence: Option<forge_primitives::tasks::Evidence>,
+    #[serde(default)]
+    kind: forge_primitives::tasks::TaskKind,
+    #[serde(default)]
+    cadence: Option<Estimate>,
+    #[serde(default, alias = "decision")]
+    request: Option<forge_primitives::tasks::Request>,
+    #[serde(default)]
+    version: u64,
     #[serde(default)]
     archived_at: Option<std::time::SystemTime>,
     created_at: std::time::SystemTime,
@@ -95,6 +103,7 @@ impl TaskRecord {
                 label: None,
                 target: artifact.clone(),
                 state: None,
+                last_check: None,
                 added_at: self.created_at,
             });
         }
@@ -105,8 +114,10 @@ impl TaskRecord {
             active_form: self.active_form,
             detail: self.detail,
             status,
+            kind: self.kind,
             owner: self.owner,
             parent: self.parent,
+            request: self.request,
             waiting_on: if blocked {
                 // The migration's unstated wait: the board draws it as a
                 // miss, which is what an old blocked row was.
@@ -117,6 +128,10 @@ impl TaskRecord {
                     verification: false,
                     parked: false,
                     since: None,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 })
             } else {
                 self.waiting_on
@@ -130,12 +145,14 @@ impl TaskRecord {
                 }
                 RecordEstimate::Parsed(parsed) => parsed,
             }),
+            cadence: self.cadence,
             rank: self.rank,
             verify: self.verify,
             attested: self.attested,
             reserved: self.reserved,
             links,
-            attempt: self.attempt,
+            evidence: self.evidence,
+            version: self.version,
             archived_at: self.archived_at,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -227,16 +244,20 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: None,
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -376,8 +397,40 @@ mod tests {
                 verification: false,
                 parked: false,
                 since: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             }),
             "no kind, no words - the miss the board shows",
+        );
+    }
+
+    /// The wait the old board stored as `decision` is today's wait on the
+    /// user: an upgrade must load the row as the wait it was, never skip it
+    /// and hide a parked row from the board.
+    #[test]
+    fn a_legacy_decision_wait_reads_as_a_wait_on_the_user() {
+        let dir = tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        write_raw(
+            &db,
+            "forge\u{0}t-4",
+            r#"{
+                "id": "t-4", "project_name": "forge", "subject": "old park",
+                "active_form": null, "detail": null, "status": "waiting",
+                "owner": null, "parent": null,
+                "waiting_on": {"kind": "decision", "detail": "ship it?", "on": null, "verification": false},
+                "created_at": {"secs_since_epoch": 0, "nanos_since_epoch": 0},
+                "updated_at": {"secs_since_epoch": 0, "nanos_since_epoch": 0}
+            }"#,
+        );
+        let read = list(&db).expect("list");
+        assert_eq!(read.len(), 1, "the decision row loads rather than vanishing: {read:?}");
+        assert_eq!(
+            read[0].waiting_on.as_ref().and_then(|wait| wait.kind),
+            Some(forge_primitives::tasks::WaitingKind::User),
+            "the old `decision` spelling is the wait on the user",
         );
     }
 
@@ -393,6 +446,7 @@ mod tests {
             label: Some("#1886".to_owned()),
             target: "https://example.invalid/issues/1886".to_owned(),
             state: Some("open".to_owned()),
+            last_check: None,
             added_at: std::time::SystemTime::UNIX_EPOCH,
         });
         upsert(&db, &task).expect("write");

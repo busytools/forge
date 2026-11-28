@@ -357,7 +357,7 @@ describe('the home over a connection', () => {
               project_name: 'proj',
               status: 'waiting',
               owner: null,
-              waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+              waiting_on: { kind: 'user', detail: null, on: null, verification: false },
             },
           ],
         },

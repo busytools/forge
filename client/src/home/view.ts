@@ -105,7 +105,7 @@ export interface Row {
   gate: string | null;
   task: TaskCell | null;
   pending: PendingKind | null;
-  /** The decision waits this seat holds: the mark, and the list behind it. */
+  /** The waits on the person this seat holds: the mark, and the list behind it. */
   waits: AttentionRow[];
   reason: string | null;
   /**
@@ -129,7 +129,7 @@ export interface ProjectRows {
   workers: Row[];
   /** Whether anything has ever started here, which is what a refusal needs. */
   started: boolean;
-  /** The project's decision waits, which its mark counts and its popover lists. */
+  /** The project's waits on the person, which its mark counts and its popover lists. */
   waits: AttentionRow[];
 }
 
@@ -359,7 +359,7 @@ export const groupClassOf = (rank: number): string => (rank === 0 ? 'state needs
  *
  * A row ranks by its strongest seat - an ask outranks a run, a run outranks a
  * sleep - and a project with no live seat ranks asleep, which is what the
- * home's flat list could not say. **A decision wait is not part of the rank**:
+ * home's flat list could not say. **A wait on the person is not part of the rank**:
  * a task wait is often future work and its seat can be asleep, so the mark
  * and its list stay on the row while the group stays the seats' own (Ved,
  * 2026-11-03).
@@ -553,7 +553,7 @@ export const PENDING_WORDS: Record<PendingKind, string> = {
  *
  * **Needs-you is the states that need a person NOW**: a pending ask, a failed
  * turn or a death the reader has not been shown, and the lifecycles
- * Attention, Failed and AuthRequired. A decision wait is not one of them - it
+ * Attention, Failed and AuthRequired. A wait on the person is not one of them - it
  * is a mark on the row, and a task wait is often future work whose seat can
  * be asleep.
  */

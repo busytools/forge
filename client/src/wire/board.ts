@@ -21,12 +21,67 @@ export interface ProjectBoardIdentity {
   name: string;
 }
 
+/** One sampled agent action: the seat, the tool and the action's own words. */
+export interface SampleRowWire {
+  seat: string;
+  tool: string;
+  detail: string;
+  at: { secs_since_epoch: number; nanos_since_epoch: number };
+}
+
+/** One row behind a digest count, so its line opens onto what it counts. */
+export interface DeltaItemWire {
+  id: string | null;
+  subject: string;
+  /** What happened to it, in the board's own words. */
+  word: string;
+  at: { secs_since_epoch: number; nanos_since_epoch: number };
+}
+
+/** What changed on the board since the person last looked. */
+export interface BoardDeltaWire {
+  moved: number;
+  landed: number;
+  expired: number;
+  merged: number;
+  /** A payload older than these fields counts without items. */
+  moved_items?: DeltaItemWire[];
+  landed_items?: DeltaItemWire[];
+  expired_items?: DeltaItemWire[];
+  merged_items?: DeltaItemWire[];
+  /** Why the archive half of the counts is missing; absent when it is whole. */
+  refused?: string | null;
+}
+
+/**
+ * The window's attention facts: when the board was last looked at and what
+ * changed since, how many seats acted in that window, and a rotating sample
+ * of the agent actions nobody escalated.
+ */
+export interface AttentionWire {
+  last_look: { secs_since_epoch: number; nanos_since_epoch: number } | null;
+  checked_at: { secs_since_epoch: number; nanos_since_epoch: number } | null;
+  agents: number;
+  delta: BoardDeltaWire;
+  sample: { rows: SampleRowWire[]; sampled: number; total: number };
+}
+
 /** One project's board detail. */
 export interface ProjectBoardWire {
   project: ProjectBoardIdentity;
   /** The project's live rows, with the board's own facts on each. */
   rows: BoardRow[];
+  /**
+   * Rows read whole on demand for the drawer, kept apart from the lanes.
+   * **A closed row's detail answer lands here**: the bulk read and the lanes
+   * carry live work only, but the archived shelf's subject opens that row's
+   * page, and the page draws from this copy.
+   */
+  detail?: BoardRow[];
   crons: CronEntry[];
+  /** The window's attention facts; a payload older than the field reads as
+   *  unknown rather than as an empty board. */
+  attention?: AttentionWire | null;
   /**
    * This project's connector subscriptions, one list per connector.
    *
@@ -95,7 +150,9 @@ export function boardFrom(data: BoardWire): BoardWire | null {
     projects: data.projects.map((row) => ({
       ...row,
       rows: (row.rows ?? []).map(rowFrom),
+      detail: (row.detail ?? []).map(rowFrom),
       crons: row.crons ?? [],
+      attention: row.attention ?? null,
     })),
   };
 }
@@ -116,6 +173,8 @@ export function boardFrom(data: BoardWire): BoardWire | null {
  */
 export const BOARD_VARIANTS: readonly string[] = [
   'tasks_changed',
+  // One row read whole, answering a drawer's own ask.
+  'task_detail',
   'cron_schedules_changed',
   'connector_subscriptions_changed',
   // A row's owner-gone chip is read from seat liveness.
@@ -208,10 +267,9 @@ export function connectorsFrame(
  * frame carries them - so a row that was drawn keeps them, and a row that is
  * new draws with their empty values and a `read_at` of the frame that
  * introduced it (`board/clock.ts`), so its worked time starts there rather
- * than at the last whole read. A row the frame does not name is left alone:
- * the core's set is the project's live rows, and a removal arrives in the
- * same frame as an absence - the next whole read reconciles the rest rather
- * than a client guessing that an omission is a delete.
+ * than at the last whole read. A row the frame does not name is DROPPED from
+ * the drawn rows: the frame is the project's whole live set, so an omission
+ * is a terminal move, and the next whole read is not asked to guess it back.
  *
  * Returns `null` when the board holds no snapshot to apply into (the first
  * read is still owed), which is the one case the caller still reads.
@@ -275,6 +333,107 @@ export function applyTasks(
   }
   const projects = [...wire.projects];
   projects[at] = { ...held, rows };
+  return { projects };
+}
+
+/**
+ * The one row a `task_detail` frame carries, or `null`.
+ *
+ * The frame answers a drawer's ask: the record with its brief and its
+ * history, which the board's bulk read leaves out. `row` is null when the id
+ * named nothing live or archived - a row can close between a read and the
+ * ask.
+ */
+export function taskDetailFrame(
+  update: SessionUpdate,
+): { project: { org: string; name: string }; row: unknown } | null {
+  if (typeof update === 'string') return null;
+  const payload = (
+    update as {
+      task_detail?: { key?: unknown; project?: unknown; row?: unknown };
+    }
+  ).task_detail;
+  if (payload === undefined) return null;
+  const project = projectOf(payload.key);
+  if (project === null || typeof payload.project !== 'string') return null;
+  return { project, row: payload.row ?? null };
+}
+
+/**
+ * Apply one full row into the drawn board, replacing the row the bulk read
+ * carried for its id. A live row the drawn board does not hold is appended to
+ * the lanes; **a closed row lands in the project's `detail` set**, where the
+ * drawer that asked reads it - the lanes draw live work only, and the
+ * archived shelf's door is a closed row's way into its own page.
+ */
+export function applyDetail(
+  wire: BoardWire | null,
+  project: { org: string; name: string },
+  row: unknown,
+): BoardWire | null {
+  if (wire === null || row === null || row === undefined) return null;
+  const at = wire.projects.findIndex(
+    (held) => held.project.org === project.org && held.project.name === project.name,
+  );
+  if (at === -1) return null;
+  const held = wire.projects[at];
+  if (held === undefined) return null;
+  const full = rowFrom(row);
+  const known = held.rows.some((entry) => entry.task.id === full.task.id);
+  const ended =
+    full.task.status === 'completed' ||
+    full.task.status === 'failed' ||
+    full.task.status === 'canceled';
+  const rows = held.rows.map((entry) => (entry.task.id === full.task.id ? full : entry));
+  if (!known && !ended) rows.push(full);
+  const detail = [...(held.detail ?? [])];
+  const heldDetail = detail.findIndex((entry) => entry.task.id === full.task.id);
+  if (heldDetail !== -1) {
+    detail[heldDetail] = full;
+  } else if (!known) {
+    detail.push(full);
+  }
+  const projects = [...wire.projects];
+  projects[at] = { ...held, rows, detail };
+  return { projects };
+}
+
+/**
+ * Carry the drawer's own rows across a whole board read.
+ *
+ * **`detail` is page-held, not read data.** A read replaces the wire, and a
+ * drawer open on a closed row - or on a live row that has since ended -
+ * would lose the only copy the read never carries. Each project's detail
+ * rows survive by id; one whose live copy the new read now carries is
+ * dropped, because the lanes' copy is the fresher one.
+ */
+export function carryDetail(previous: BoardWire | null, next: BoardWire): BoardWire {
+  if (previous === null) return next;
+  const projects = next.projects.map((held) => {
+    const before = previous.projects.find(
+      (entry) => entry.project.org === held.project.org && entry.project.name === held.project.name,
+    );
+    if (before === undefined) return held;
+    const fresh = new Map(held.rows.map((row) => [row.task.id, row]));
+    // **A whole copy the page already holds survives a bulk read.** The
+    // read carries the window's fields only - no brief, no history - so the
+    // drawer's row would lose both on the next whole read. The drawer's own
+    // set always stands unless the read carries a whole copy of the same
+    // row; a copy from the lanes is carried only when it is itself whole.
+    const detail = [...(held.detail ?? [])];
+    const carry = (row: BoardRow): void => {
+      const now = fresh.get(row.task.id);
+      if (now !== undefined && (now.task.detail !== null || now.history_total > 0)) return;
+      const at = detail.findIndex((entry) => entry.task.id === row.task.id);
+      if (at === -1) detail.push(row);
+      else detail[at] = row;
+    };
+    for (const row of before.detail ?? []) carry(row);
+    for (const row of before.rows) {
+      if (row.task.detail !== null || row.history_total > 0) carry(row);
+    }
+    return { ...held, detail };
+  });
   return { projects };
 }
 

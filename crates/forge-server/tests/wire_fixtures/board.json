@@ -10,6 +10,27 @@
       "connectors": {
         "gotify": [],
         "slack": []
+      },
+      "attention": {
+        "last_look": null,
+        "checked_at": "<checked-at>",
+        "agents": 0,
+        "delta": {
+          "moved": 0,
+          "landed": 0,
+          "expired": 0,
+          "merged": 0,
+          "moved_items": [],
+          "landed_items": [],
+          "expired_items": [],
+          "merged_items": [],
+          "refused": null
+        },
+        "sample": {
+          "rows": [],
+          "sampled": 0,
+          "total": 0
+        }
       }
     }
   ]

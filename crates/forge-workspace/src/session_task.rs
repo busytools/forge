@@ -3084,7 +3084,11 @@ pub(crate) fn execute_command_via_handle(
     match cmd {
         // A handoff runs the task's own state machine, before it reaches here;
         // a vault answer is workspace state, handled before the agent path.
-        Command::Handoff { .. } | Command::RespondVaultAsk { .. } => Ok(()),
+        Command::Handoff { .. }
+        | Command::RespondVaultAsk { .. }
+        | Command::TaskAck { .. }
+        | Command::TaskSnooze { .. }
+        | Command::BoardSeen { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
@@ -3191,6 +3195,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::TaskMove { .. }
         | Command::TaskReopen { .. }
         | Command::TaskReserve { .. }
+        | Command::TaskRestore { .. }
+        | Command::TaskDetail { .. }
         | Command::PluginInstall { .. }
         | Command::PluginUpdate { .. }
         | Command::PluginUpdateAll
@@ -4609,16 +4615,20 @@ mod tests {
                 active_form: None,
                 detail: None,
                 status: forge_primitives::TaskStatus::Pending,
+                kind: forge_primitives::tasks::TaskKind::Finite,
                 owner: None,
                 parent: None,
                 waiting_on: None,
+                request: None,
                 estimate: None,
+                cadence: None,
                 rank: None,
                 verify: None,
                 attested: None,
                 reserved: None,
                 links: Vec::new(),
-                attempt: 0,
+                evidence: None,
+                version: 0,
                 archived_at: None,
                 created_at: std::time::SystemTime::UNIX_EPOCH,
                 updated_at: std::time::SystemTime::UNIX_EPOCH,

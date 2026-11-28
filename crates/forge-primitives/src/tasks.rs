@@ -42,12 +42,26 @@ pub enum TaskStatus {
     Canceled,
 }
 
-/// What a waiting row waits on. A decision routes to the user; a
+impl TaskStatus {
+    /// Whether nothing more happens on a row in this state. The one
+    /// terminal predicate: the board, the chase and the store's cascade
+    /// all read it rather than spelling the set out again.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Canceled)
+    }
+}
+
+/// What a waiting row waits on. `user` routes to the person - a look, a
+/// decision, a clarification, an exception's disposition or a lesson; a
 /// dependency and a resource route to the lead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitingKind {
-    Decision,
+    /// The row was stored as `decision` before the kind split into the five
+    /// ask kinds; an old row must load as the wait it was, not be skipped by
+    /// the store's decode.
+    #[serde(alias = "decision")]
+    User,
     Dependency,
     Resource,
 }
@@ -89,6 +103,250 @@ pub struct Waiting {
     /// before the field existed, which reads back as its creation.
     #[serde(default)]
     pub since: Option<SystemTime>,
+    /// The default that runs if the item is ignored. **There is no approve
+    /// default**: consent by inattention is not consent.
+    #[serde(default)]
+    pub due: Option<Deadline>,
+    /// When the reader marked the item seen without answering it. Distinct
+    /// from the answer, and forgotten if it stands unresolved too long.
+    #[serde(default)]
+    pub acknowledged_at: Option<SystemTime>,
+    /// The reader's own deferral, until a time or the next activity.
+    #[serde(default)]
+    pub snoozed: Option<Snooze>,
+    /// When the item's deadline default ran and expired it. The wait is
+    /// kept on the row, and the row itself is canceled with the reason.
+    #[serde(default)]
+    pub expired_at: Option<SystemTime>,
+}
+
+/// What an ask on the person needs back. A look is not a request: it is a
+/// verification wait, answered by approve or send back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskKind {
+    /// A choice among enumerated options.
+    #[default]
+    Decision,
+    /// A fact only the person has: a free-text answer that returns as a
+    /// value.
+    Clarification,
+    /// A disposition on a fault: retry, rescope, drop or diagnose.
+    Exception,
+    /// A lesson that becomes project policy, so the class stops recurring.
+    Teaching,
+}
+
+/// An exception's disposal, enumerated so the door is the same everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    Retry,
+    Rescope,
+    Drop,
+    Diagnose,
+}
+
+impl Disposition {
+    pub const ALL: [Self; 4] = [Self::Retry, Self::Rescope, Self::Drop, Self::Diagnose];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Retry => "retry",
+            Self::Rescope => "rescope",
+            Self::Drop => "drop",
+            Self::Diagnose => "diagnose",
+        }
+    }
+
+    pub fn parse(stated: &str) -> Option<Self> {
+        match stated.trim().to_ascii_lowercase().as_str() {
+            "retry" => Some(Self::Retry),
+            "rescope" => Some(Self::Rescope),
+            "drop" => Some(Self::Drop),
+            "diagnose" => Some(Self::Diagnose),
+            _ => None,
+        }
+    }
+}
+
+/// The value an ask returned: a decision's choice, a clarification's text,
+/// or an exception's disposition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerValue {
+    Choice(String),
+    Text(String),
+    Disposition(Disposition),
+}
+
+/// An answer as it landed: the value the kind needed, when, and the note
+/// the person left with it. A teaching's lesson is kept here too, so the
+/// record itself names the note its class was settled by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Answer {
+    pub value: AnswerValue,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// The lesson a teaching's answer settles its class with.
+    #[serde(default)]
+    pub lesson: Option<String>,
+    pub at: SystemTime,
+}
+
+impl<'de> Deserialize<'de> for Answer {
+    /// Reads the current shape and the pre-revision one - `{choice, note,
+    /// at}` with no `value` - as a decision's choice, so a stored row
+    /// written before this cut keeps its record.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            value: Option<AnswerValue>,
+            #[serde(default)]
+            choice: Option<String>,
+            #[serde(default)]
+            note: Option<String>,
+            #[serde(default)]
+            lesson: Option<String>,
+            at: SystemTime,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let value = match (raw.value, raw.choice) {
+            (Some(value), _) => value,
+            (None, Some(choice)) => AnswerValue::Choice(choice),
+            (None, None) => {
+                return Err(serde::de::Error::missing_field("value"));
+            }
+        };
+        Ok(Self { value, note: raw.note, lesson: raw.lesson, at: raw.at })
+    }
+}
+
+impl Answer {
+    /// The value as one line, for the tool output and the board.
+    pub fn value_words(&self) -> String {
+        match &self.value {
+            AnswerValue::Choice(choice) => choice.clone(),
+            AnswerValue::Text(text) => text.clone(),
+            AnswerValue::Disposition(disposition) => disposition.as_str().to_owned(),
+        }
+    }
+}
+
+/// The default that runs when an item is ignored past its deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultIfIgnored {
+    /// Tell the project's lead the item went unanswered, and keep waiting.
+    Escalate,
+    /// End the row canceled with the reason, keeping the record.
+    Expire,
+    /// Re-notify the lead that the person is owed the ask again, and
+    /// re-arm the deadline one period out.
+    Reask,
+}
+
+impl DefaultIfIgnored {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Escalate => "escalate",
+            Self::Expire => "expire",
+            Self::Reask => "reask",
+        }
+    }
+
+    pub fn parse(stated: &str) -> Option<Self> {
+        match stated.trim().to_ascii_lowercase().as_str() {
+            "escalate" => Some(Self::Escalate),
+            "expire" => Some(Self::Expire),
+            "reask" => Some(Self::Reask),
+            _ => None,
+        }
+    }
+}
+
+/// An item's deadline and the default that runs when it passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deadline {
+    pub at: SystemTime,
+    pub default: DefaultIfIgnored,
+    /// When the default last ran; absent until it does.
+    #[serde(default)]
+    pub ran_at: Option<SystemTime>,
+}
+
+/// How long the reader's own deferral lasts: until a time, or until the
+/// row sees new activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnoozeUntil {
+    At(SystemTime),
+    Activity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snooze {
+    pub until: SnoozeUntil,
+    pub since: SystemTime,
+}
+
+/// A question a row is waiting on the person for: the ask, how the answer
+/// must be shaped, and the answer once one is given. The board records
+/// answers, not conversations - the thread lives in the chat, and nothing
+/// but the answer is ever written here. A look carries no request: it is
+/// the verification wait, answered by approve or send back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Request {
+    #[serde(default)]
+    pub kind: AskKind,
+    pub question: String,
+    /// A decision's enumerated options; empty for every other kind.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// A teaching's class: the recurring trouble the lesson settles. The
+    /// policy note it writes is keyed on it, and an ask of a settled class
+    /// is refused rather than raised again.
+    #[serde(default)]
+    pub class: Option<String>,
+    #[serde(default)]
+    pub answer: Option<Answer>,
+}
+
+impl Request {
+    /// Whether this ask's answer door is the shape its kind needs.
+    pub fn answer_fits(&self, value: &AnswerValue, lesson: Option<&str>) -> bool {
+        match (&self.kind, value) {
+            (AskKind::Decision, AnswerValue::Choice(choice)) => {
+                !choice.trim().is_empty()
+                    && (self.options.is_empty() || self.options.iter().any(|o| o == choice))
+            }
+            (AskKind::Clarification, AnswerValue::Text(text)) => !text.trim().is_empty(),
+            (AskKind::Exception, AnswerValue::Disposition(_)) => true,
+            (AskKind::Teaching, AnswerValue::Text(text)) => {
+                !text.trim().is_empty()
+                    && lesson.is_some_and(|lesson| !lesson.trim().is_empty())
+                    && self.class.as_deref().is_some_and(|class| !class.trim().is_empty())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether a row is finite work with a finish line, or standing work
+/// that never finishes: the watcher, a growth loop, a weekly sweep. A
+/// finite row carries an estimate and is the chase's re-plan trigger; a
+/// standing row carries a cadence, is never chased for overrun, and is
+/// checked when its cadence comes due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    Finite,
+    Standing,
 }
 
 /// A duration estimate: the words a reader sees ("2h", "1d") and the
@@ -151,6 +409,79 @@ impl LinkKind {
     }
 }
 
+/// The most of an output excerpt a row keeps. A completion's excerpt is
+/// the reader's evidence, not a log dump: four thousand characters is
+/// enough to show a test result or a diff stat, and short enough that a
+/// list answer carrying a project's rows stays deliverable.
+pub const EVIDENCE_EXCERPT_MAX: usize = 4_000;
+
+/// What a completion rests on, and forge's own check of it.
+///
+/// A row that changes code, docs or a page cannot move to completed
+/// without one of the artifact forms: a commit that must exist in the
+/// project's repository, or a path that must exist at that commit (or at
+/// `HEAD` when no commit is named). The excerpt travels beside them for
+/// the reader; it is never the whole claim, because output cannot be
+/// checked.
+///
+/// `verified_at` is stamped by the gate on the move that checks the
+/// artifact, and `problem` carries why the last check failed - absence is
+/// never success, and an unchecked claim reads as unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Evidence {
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub excerpt: Option<String>,
+    #[serde(default)]
+    pub verified_at: Option<SystemTime>,
+    #[serde(default)]
+    pub problem: Option<String>,
+}
+
+impl Evidence {
+    /// The excerpt as a row keeps it: at most [`EVIDENCE_EXCERPT_MAX`]
+    /// characters, cut on a character boundary so a multi-byte glyph is
+    /// never split.
+    pub fn bounded_excerpt(excerpt: &str) -> String {
+        match excerpt.char_indices().nth(EVIDENCE_EXCERPT_MAX) {
+            Some((cut, _)) => excerpt[..cut].to_owned(),
+            None => excerpt.to_owned(),
+        }
+    }
+}
+
+/// One connector's look at a link, cached on the row so the board never
+/// waits on a network read and a blip draws as unknown rather than as
+/// success.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkCheck {
+    /// When the connector last read the link. Freshness is measured from
+    /// here, so an unchanged read still keeps the check current.
+    pub at: SystemTime,
+    /// When the read last reported something DIFFERENT from the one before
+    /// it. New input is measured from here: a connector re-reading the same
+    /// head every five minutes has seen nothing new.
+    #[serde(default)]
+    pub changed_at: Option<SystemTime>,
+    /// The target's state as the connector spells it (open / closed /
+    /// merged), absent when the check could not say.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// The head revision the connector reported.
+    #[serde(default)]
+    pub head: Option<String>,
+    /// The CI verdict: `passing`, `failing` or `pending`. Absent is
+    /// unknown, which is never read as passing.
+    #[serde(default)]
+    pub ci: Option<String>,
+    /// Why the last check failed, when it did.
+    #[serde(default)]
+    pub problem: Option<String>,
+}
+
 /// One reference a row carries: the epic's spec and plan, a task's issues
 /// and PRs, anything else.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +492,10 @@ pub struct TaskLink {
     pub target: String,
     /// Read back where forge can (open / closed / merged).
     pub state: Option<String>,
+    /// The connector's cached look at the target. `None` means nothing has
+    /// checked it - the board's unknown.
+    #[serde(default)]
+    pub last_check: Option<LinkCheck>,
     pub added_at: SystemTime,
 }
 
@@ -175,6 +510,10 @@ pub struct Task {
     pub active_form: Option<String>,
     pub detail: Option<String>,
     pub status: TaskStatus,
+    /// Finite work or standing work; a row stored before the field is
+    /// finite, which is what every row was.
+    #[serde(default)]
+    pub kind: TaskKind,
     /// The session holding it. `None` is `unclaimed`.
     pub owner: Option<SessionSlot>,
     /// The task this one belongs under, in the same project.
@@ -182,7 +521,20 @@ pub struct Task {
     /// Why this row cannot proceed, when `status` is waiting.
     #[serde(default)]
     pub waiting_on: Option<Waiting>,
+    /// The ask on the person: its kind, question, options or class, and
+    /// the answer once given. Absent on a row that is not asking one (a
+    /// look carries none: it is the verification wait).
+    /// `decision` is the pre-revision name; a stored row keeps its record
+    /// by reading through the alias.
+    #[serde(default, alias = "decision")]
+    pub request: Option<Request>,
+    /// A finite row's finish line, and the chase's re-plan trigger.
     pub estimate: Option<Estimate>,
+    /// A standing row's check interval, in the same grammar as an
+    /// estimate: when the row is due to be asked whether it is still
+    /// doing its job.
+    #[serde(default)]
+    pub cadence: Option<Estimate>,
     /// Queue order; lower reads first, ties break by creation.
     #[serde(default)]
     pub rank: Option<i64>,
@@ -199,14 +551,45 @@ pub struct Task {
     pub reserved: Option<ReservedBy>,
     #[serde(default)]
     pub links: Vec<TaskLink>,
-    /// Claims and send-backs, so a loop is visible.
+    /// What the completion rests on: the artifact forge checks, the
+    /// excerpt the reader sees, and when the check last ran.
     #[serde(default)]
-    pub attempt: u32,
+    pub evidence: Option<Evidence>,
+    /// How many writes the row has taken. An update states the version it
+    /// read, so a lost write is refused visibly rather than overwriting
+    /// what another seat wrote. Row creation is version 0.
+    #[serde(default)]
+    pub version: u64,
     /// Set when the tree archived; archived rows are history, not live work.
     #[serde(default)]
     pub archived_at: Option<SystemTime>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
+}
+
+impl Task {
+    /// Whether a seat could start this row: pending, holding no wait, and
+    /// not reserved for the user. The one ready predicate; a caller that
+    /// needs more - an unowned row for dispatch, a live holder for a
+    /// claim - adds that condition rather than restating this one.
+    pub fn is_ready(&self) -> bool {
+        self.status == TaskStatus::Pending && self.waiting_on.is_none() && self.reserved.is_none()
+    }
+
+    /// When the row's current wait began, stamped as the wait is raised.
+    /// A wait stored before the stamp reads as the row's creation, never
+    /// its last edit: an edit that moved the row answered nothing. The
+    /// one wait start the marks, the chase and the attention item read.
+    pub fn wait_started(&self) -> Option<SystemTime> {
+        let wait = self.waiting_on.as_ref()?;
+        Some(wait.since.unwrap_or(self.created_at))
+    }
+
+    /// How long the row has held its wait, from that same start.
+    pub fn wait_age_secs(&self, now: SystemTime) -> Option<u64> {
+        let started = self.wait_started()?;
+        Some(now.duration_since(started).map_or(0, |d| d.as_secs()))
+    }
 }
 
 /// Who moved a row: the seat that called, the user from the board, or the
@@ -236,7 +619,12 @@ pub struct TaskTransition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChaseRung {
+    /// A finite row's worked time passed its estimate: the one re-plan ask
+    /// to its owner (which parks the row), then nothing until an estimate
+    /// is restated.
     EstimateNudge,
+    /// The re-plan ask went unanswered past the cadence: the lead hears
+    /// once.
     Escalate,
     QueueStall,
     WaitStall,
@@ -247,9 +635,17 @@ pub enum ChaseRung {
     Death,
     Retro,
     EpicClose,
-    /// One row parked on the user, untouched: one nudge per row per wait
-    /// episode asks the lead to act on it - the chase never spawns a
-    /// session for it.
+    /// A standing row's cadence came due: is it doing its job, should it
+    /// change shape or end?
+    Cadence,
+    /// An in-progress row has not moved past its band, and its owner is
+    /// live: the row is stuck rather than gone.
+    Stuck,
+    /// A connector reported something about a link after the row's last
+    /// touch: the row may be obsolete or urgent now.
+    NewInput,
+    /// Retired: a wait on the user is never chased by an agent, and no
+    /// code fires this. Kept so a firing already in the log decodes.
     UserWaitDigest,
 }
 
@@ -281,9 +677,23 @@ mod tests {
             active_form: Some("Merging peers and workers into agents".to_owned()),
             detail: Some("One agents__ MCP family.".to_owned()),
             status: TaskStatus::InProgress,
+            kind: TaskKind::Finite,
             owner: Some(SessionSlot::worker("Busytools", "forge", "agents-merge")),
             parent: None,
+            request: Some(Request {
+                kind: AskKind::Decision,
+                question: "Merge the families?".to_owned(),
+                options: vec!["merge".to_owned(), "wait".to_owned()],
+                class: None,
+                answer: Some(Answer {
+                    value: AnswerValue::Choice("merge".to_owned()),
+                    note: Some("after the bench".to_owned()),
+                    lesson: None,
+                    at: std::time::SystemTime::UNIX_EPOCH,
+                }),
+            }),
             estimate: Some(Estimate { words: "1d".to_owned(), secs: 86_400 }),
+            cadence: None,
             rank: Some(10),
             verify: Some(Verify::User),
             attested: Some(Attestation {
@@ -296,10 +706,18 @@ mod tests {
                 label: Some("PR #1889".to_owned()),
                 target: "https://example.invalid/pull/1889".to_owned(),
                 state: Some("open".to_owned()),
+                last_check: None,
                 added_at: std::time::SystemTime::UNIX_EPOCH,
             }],
             waiting_on: None,
-            attempt: 2,
+            evidence: Some(Evidence {
+                commit: Some("0123456789abcdef".to_owned()),
+                path: Some("crates/forge-primitives/src/tasks.rs".to_owned()),
+                excerpt: Some("cargo nextest run: 206 passed".to_owned()),
+                verified_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                problem: None,
+            }),
+            version: 3,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -314,6 +732,293 @@ mod tests {
         assert_eq!(back, task, "every field survives a store round trip");
     }
 
+    /// A standing row is checked on its cadence, never chased for
+    /// overrun, so it carries a cadence where a finite row carries an
+    /// estimate.
+    #[test]
+    fn a_standing_row_carries_a_cadence() {
+        let task = Task {
+            kind: TaskKind::Standing,
+            cadence: Estimate::parse("1d"),
+            estimate: None,
+            ..sample_task()
+        };
+        let json = serde_json::to_vec(&task).expect("serialize");
+        let back: Task = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back.kind, TaskKind::Standing);
+        assert_eq!(back.cadence, Estimate::parse("1d"));
+        assert_eq!(back.estimate, None, "a standing row has no finish line to overrun");
+        assert_eq!(
+            serde_json::to_string(&TaskKind::Standing).expect("serialize"),
+            "\"standing\"",
+            "the spelling the store writes and the tools read",
+        );
+    }
+
+    /// The board records answers, not conversations: the ask, the options
+    /// the lead enumerated, and the value the person returned - the choice
+    /// for a decision, the text for a clarification, the disposition for an
+    /// exception. Nothing else is written to it.
+    #[test]
+    fn a_request_record_keeps_its_ask_and_kinded_answer() {
+        let request = Request {
+            kind: AskKind::Decision,
+            question: "Ship the parser rewrite behind a flag?".to_owned(),
+            options: vec!["flag it".to_owned(), "ship it outright".to_owned()],
+            class: None,
+            answer: Some(Answer {
+                value: AnswerValue::Choice("flag it".to_owned()),
+                note: Some("until the bench is green".to_owned()),
+                lesson: None,
+                at: std::time::SystemTime::UNIX_EPOCH,
+            }),
+        };
+        let json = serde_json::to_vec(&request).expect("serialize");
+        let back: Request = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back, request, "the record keeps the ask, the options and the answer");
+        let unanswered = Request { answer: None, ..request.clone() };
+        let back: Request =
+            serde_json::from_slice(&serde_json::to_vec(&unanswered).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(back.answer, None, "a row waiting on the answer carries none yet");
+
+        // A clarification takes text and refuses a choice; an exception
+        // takes an enumerated disposition; a teaching takes a lesson and a
+        // class.
+        let clarification = Request {
+            kind: AskKind::Clarification,
+            question: "Which account is the staging one?".to_owned(),
+            options: Vec::new(),
+            class: None,
+            answer: None,
+        };
+        assert!(clarification.answer_fits(&AnswerValue::Text("Granite".to_owned()), None));
+        assert!(
+            !clarification.answer_fits(&AnswerValue::Choice("Granite".to_owned()), None),
+            "an option list cannot answer a clarification",
+        );
+        let exception = Request {
+            kind: AskKind::Exception,
+            question: "The flake is back: what now?".to_owned(),
+            options: Vec::new(),
+            class: None,
+            answer: None,
+        };
+        assert!(exception.answer_fits(&AnswerValue::Disposition(Disposition::Retry), None));
+        assert!(!exception.answer_fits(&AnswerValue::Text("retry".to_owned()), None));
+        let teaching = Request {
+            kind: AskKind::Teaching,
+            question: "Which rule settles flaky CI retries?".to_owned(),
+            options: Vec::new(),
+            class: Some("ci-flake".to_owned()),
+            answer: None,
+        };
+        assert!(teaching.answer_fits(
+            &AnswerValue::Text("Report the run; never retry a flake twice.".to_owned()),
+            Some("Report the run; never retry a flake twice."),
+        ));
+        assert!(
+            !teaching.answer_fits(&AnswerValue::Text("a lesson".to_owned()), None),
+            "a teaching without a lesson writes no policy",
+        );
+    }
+
+    /// A row stored before this revision carries `decision` with
+    /// `answer: {choice, ...}`; it reads back as a decision-kind request
+    /// with the choice intact, so no stored record is lost.
+    #[test]
+    fn a_pre_revision_decision_reads_as_a_request_choice() {
+        let older = serde_json::json!({
+            "id": "t-1",
+            "project_name": "forge",
+            "subject": "the row",
+            "status": "waiting",
+            "kind": "finite",
+            "decision": {
+                "question": "Ship it?",
+                "options": ["ship it", "wait"],
+                "answer": {
+                    "choice": "ship it",
+                    "note": "go",
+                    "at": { "secs_since_epoch": 5, "nanos_since_epoch": 0 }
+                }
+            },
+            "links": [],
+            "version": 0,
+            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+            "updated_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 }
+        });
+        let task: Task = serde_json::from_value(older).expect("a pre-revision row reads");
+        let request = task.request.expect("the record survives the rename");
+        assert_eq!(request.kind, AskKind::Decision);
+        assert_eq!(request.answer.expect("the answer survives").value_words(), "ship it");
+    }
+
+    /// The stored rows outlive the struct that wrote them: a row written
+    /// before the kind, the cadence, the decision and the version reads
+    /// back as finite work at version zero rather than failing the set.
+    #[test]
+    fn a_row_written_before_the_new_fields_reads_as_finite_and_unversioned() {
+        let mut older = serde_json::to_value(sample_task()).expect("serialize");
+        let object = older.as_object_mut().expect("a row is an object");
+        for gone in ["kind", "cadence", "request", "version", "attempt", "evidence"] {
+            object.remove(gone);
+        }
+        object.insert("attempt".to_owned(), serde_json::json!(3));
+        let read: Task = serde_json::from_value(older).expect("a row written before the fields");
+        assert_eq!(read.kind, TaskKind::Finite, "an old row is finite work");
+        assert_eq!(read.cadence, None);
+        assert_eq!(read.request, None);
+        assert_eq!(read.evidence, None, "a row written before the gate carries no claim");
+        assert_eq!(read.version, 0, "nothing names a version it has never written");
+    }
+
+    /// The one terminal predicate: the statuses nothing more happens on.
+    /// `failed` is terminal without being done, and `canceled` is a
+    /// deliberate withdrawal - both end the row.
+    #[test]
+    fn the_terminal_statuses_are_the_ones_nothing_more_happens_on() {
+        for live in [TaskStatus::Pending, TaskStatus::InProgress, TaskStatus::Waiting] {
+            assert!(!live.is_terminal(), "{live:?} is work in play");
+        }
+        for ended in [TaskStatus::Completed, TaskStatus::Failed, TaskStatus::Canceled] {
+            assert!(ended.is_terminal(), "{ended:?} is an end");
+        }
+    }
+
+    /// The one ready predicate: pending, holding no wait, not reserved.
+    /// Callers that need more (an unowned row for dispatch, a live holder
+    /// for a claim) add their own condition rather than restating this one.
+    #[test]
+    fn a_row_is_ready_only_when_pending_unwaited_and_unreserved() {
+        let plain =
+            Task { status: TaskStatus::Pending, reserved: None, waiting_on: None, ..sample_task() };
+        let ready = plain.clone();
+        assert!(ready.is_ready(), "a pending row with nothing in its way can be started");
+        let held = Task {
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: None,
+                on: None,
+                verification: false,
+                parked: false,
+                since: None,
+                acknowledged_at: None,
+                due: None,
+                snoozed: None,
+                expired_at: None,
+            }),
+            ..plain.clone()
+        };
+        assert!(!held.is_ready(), "a wait the status does not show still blocks a start");
+        let kept = Task { reserved: Some(ReservedBy::User), ..plain.clone() };
+        assert!(!kept.is_ready(), "a pick reserved for the user is nobody else's to start");
+        for live in [TaskStatus::InProgress, TaskStatus::Waiting, TaskStatus::Completed] {
+            assert!(!Task { status: live, ..plain.clone() }.is_ready(), "{live:?} is not a start");
+        }
+    }
+
+    /// The one wait age: from the wait's own start, never from the row's
+    /// last edit (which moves for a link, a park or a drag that answered
+    /// nothing), and from the creation for a wait stored before the stamp.
+    #[test]
+    fn the_wait_age_runs_from_the_waits_own_start() {
+        let waiting = |since: Option<SystemTime>| Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("a CI run".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since,
+            acknowledged_at: None,
+            due: None,
+            snoozed: None,
+            expired_at: None,
+        };
+        let started = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(150);
+        let row = Task {
+            created_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+            updated_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200),
+            waiting_on: Some(waiting(Some(started))),
+            ..sample_task()
+        };
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(400);
+        assert_eq!(row.wait_started(), Some(started), "the wait's own start, not the edit");
+        assert_eq!(row.wait_age_secs(now), Some(250), "the age counts from that start");
+
+        let older = Task { waiting_on: Some(waiting(None)), ..row.clone() };
+        assert_eq!(
+            older.wait_started(),
+            Some(older.created_at),
+            "a wait stored before the stamp reads as its creation",
+        );
+        let not_waiting = Task { waiting_on: None, ..row };
+        assert_eq!(not_waiting.wait_age_secs(now), None, "a row holding no wait has no wait age");
+    }
+
+    /// The evidence block is what a completion rests on: the artifact, the
+    /// excerpt, and the gate's own verdict. An unverified claim carries no
+    /// stamp, which is the wire's `unknown`.
+    #[test]
+    fn an_evidence_block_keeps_the_artifact_its_excerpt_and_its_verdict() {
+        let evidence = Evidence {
+            commit: Some("0123456789abcdef".to_owned()),
+            path: Some("crates/forge-workspace/src/board.rs".to_owned()),
+            excerpt: Some("12 tests run: 12 passed".to_owned()),
+            verified_at: Some(std::time::SystemTime::UNIX_EPOCH),
+            problem: None,
+        };
+        let json = serde_json::to_vec(&evidence).expect("serialize");
+        let back: Evidence = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back, evidence, "every part of the claim survives the store");
+
+        let unchecked = Evidence { verified_at: None, problem: None, ..evidence.clone() };
+        let back: Evidence =
+            serde_json::from_slice(&serde_json::to_vec(&unchecked).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(back.verified_at, None, "nothing verified it, so it reads as unknown");
+        let failed = Evidence {
+            verified_at: None,
+            problem: Some("commit deadbeef is not in /tmp/repo".to_owned()),
+            ..evidence
+        };
+        assert_eq!(
+            serde_json::from_slice::<Evidence>(&serde_json::to_vec(&failed).expect("serialize"))
+                .expect("deserialize")
+                .problem
+                .as_deref(),
+            Some("commit deadbeef is not in /tmp/repo"),
+            "a failed lookup keeps why",
+        );
+    }
+
+    /// The excerpt is bounded on a character boundary: a long log does not
+    /// ride, and a split glyph does not corrupt the record.
+    #[test]
+    fn an_excerpt_is_bounded_on_a_character_boundary() {
+        let short = "12 tests run: 12 passed";
+        assert_eq!(Evidence::bounded_excerpt(short), short, "a short excerpt rides whole");
+
+        let long = "y".repeat(EVIDENCE_EXCERPT_MAX + 500);
+        assert_eq!(Evidence::bounded_excerpt(&long).chars().count(), EVIDENCE_EXCERPT_MAX);
+
+        // A multi-byte glyph straddling the cut is dropped whole rather
+        // than split into an invalid string.
+        let glyphs = "é".repeat(EVIDENCE_EXCERPT_MAX + 1);
+        let cut = Evidence::bounded_excerpt(&glyphs);
+        assert_eq!(cut.chars().count(), EVIDENCE_EXCERPT_MAX);
+        assert!(cut.is_char_boundary(cut.len()));
+    }
+
+    /// The attempt tick is cut: nothing acted on it, and the board keeps
+    /// the reason a row was sent back in its detail instead.
+    #[test]
+    fn a_row_no_longer_carries_an_attempt() {
+        let json = serde_json::to_value(sample_task()).expect("serialize");
+        let wrote_attempt = json.get("attempt").is_some();
+        assert!(!wrote_attempt, "the record writes no attempt any more: {json}");
+    }
+
     #[test]
     fn a_waiting_row_carries_its_kind_and_the_task_it_waits_on() {
         let waiting = Waiting {
@@ -323,6 +1028,10 @@ mod tests {
             verification: false,
             parked: false,
             since: None,
+            acknowledged_at: None,
+            due: None,
+            snoozed: None,
+            expired_at: None,
         };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
@@ -340,6 +1049,10 @@ mod tests {
             verification: false,
             parked: false,
             since: None,
+            acknowledged_at: None,
+            due: None,
+            snoozed: None,
+            expired_at: None,
         };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
@@ -364,6 +1077,7 @@ mod tests {
             label: Some("PR #1889".to_owned()),
             target: "https://example.invalid/pull/1".to_owned(),
             state: Some("open".to_owned()),
+            last_check: None,
             added_at: std::time::SystemTime::UNIX_EPOCH,
         };
         let json = serde_json::to_vec(&link).expect("serialize");

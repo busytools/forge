@@ -9,7 +9,7 @@
 
 import { followable } from '../home/view';
 import type { BoardWire } from '../wire/board';
-import type { BoardRow, HomeWire, Marks, Task, TaskStatus } from '../wire/home';
+import type { BoardRow, Disposition, HomeWire, Task, TaskStatus } from '../wire/home';
 
 /** One card on the board, resolved for the markup. */
 export interface BoardCardView {
@@ -136,6 +136,22 @@ export function landed(rows: BoardRow[], id: string, want: PendingMove): boolean
   return at !== -1 && (lane[at + 1] ?? null) === want.before;
 }
 
+/**
+ * An exception's four disposals, enumerated as the core's are.
+ *
+ * **The table is exhaustive on purpose**: a disposition added to the core's
+ * `Disposition` leaves a key missing here and the build fails, rather than
+ * this copy quietly offering one door fewer.
+ */
+const DISPOSITION_TABLE = {
+  retry: true,
+  rescope: true,
+  drop: true,
+  diagnose: true,
+} satisfies Record<Disposition, true>;
+
+export const DISPOSITIONS: readonly Disposition[] = Object.keys(DISPOSITION_TABLE) as Disposition[];
+
 /** One row waiting on the user, as the strip draws it. */
 export interface WaitingView {
   id: string;
@@ -143,6 +159,13 @@ export interface WaitingView {
   owner: string | null;
   /** The verify gate, or a question the worker raised. */
   verification: boolean;
+  /** The ask's kind; `null` for a look and for a row written before the
+   *  record - both answer by their own door. */
+  kind: 'decision' | 'clarification' | 'exception' | 'teaching' | null;
+  /** A decision's enumerated options; empty for every other kind. */
+  options: string[];
+  /** A teaching's class, shown beside the ask. */
+  teachingClass: string | null;
   /** The card's title: the wait's own detail, else the row's, else the state's sentence. */
   ask: string;
   /** The row's references, as doors, beside the ask. */
@@ -199,7 +222,7 @@ export function fmtSecs(secs: number): string {
 }
 
 /**
- * Whether a row's wait is the READER's: a decision, or a look park on a row
+ * Whether a row's wait is the READER's: an ask on the user, or a look park on a row
  * carrying its own `verify: 'user'`. The gate is minted on the row, never
  * inherited from its epic (#2423), so a verification wait an inherited gate
  * left behind is a plain wait, not an ask on the reader.
@@ -207,11 +230,13 @@ export function fmtSecs(secs: number): string {
 export function waitOnUser(task: Task): boolean {
   const wait = task.waiting_on;
   if (wait === null) return false;
-  return wait.verification ? task.verify === 'user' : wait.kind === 'decision';
+  return wait.verification ? task.verify === 'user' : wait.kind === 'user';
 }
 
 /** The chips a row's marks and its wait imply, in reading order. */
-function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardView['chips'] {
+function chipsOf(row: BoardRow): BoardCardView['chips'] {
+  const task = row.task;
+  const marks = row.marks;
   const chips: BoardCardView['chips'] = [];
   if (task.waiting_on !== null) {
     const wait = task.waiting_on;
@@ -224,19 +249,27 @@ function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardVie
             ? { label: 'waiting on a resource', tone: 'warn' }
             : { label: 'waiting', tone: 'warn' },
     );
-    if (marks.waiting_too_long)
-      chips.push({ label: `waiting ${fmtSecs(updatedSecsAgo)}`, tone: 'bad' });
+    if (marks.overdue) {
+      // The wait's own age, from the server: an edit on a waiting row moves
+      // its last touch, and the wait did not restart.
+      chips.push({
+        label: `waiting ${fmtSecs(row.wait_secs ?? row.updated_secs_ago)}`,
+        tone: 'bad',
+      });
+    }
   }
-  if (marks.overdue) chips.push({ label: 'overdue', tone: 'bad' });
-  if (marks.no_movement && task.waiting_on === null) {
-    chips.push({ label: `no movement ${fmtSecs(updatedSecsAgo)}`, tone: 'dim' });
+  if (marks.overdue && task.waiting_on === null) chips.push({ label: 'overdue', tone: 'bad' });
+  if (marks.stale && task.waiting_on === null) {
+    chips.push(
+      row.owner_live
+        ? { label: `no change ${fmtSecs(row.updated_secs_ago)}`, tone: 'dim' }
+        : { label: 'owner gone', tone: 'bad' },
+    );
   }
-  if (marks.stale) chips.push({ label: 'owner gone', tone: 'bad' });
   if (marks.in_review) chips.push({ label: 'in review', tone: 'blue' });
   if ((task.attested ?? null) !== null) chips.push({ label: 'lead attested', tone: 'blue' });
   if (marks.to_close) chips.push({ label: 'to close', tone: 'blue' });
   if (task.reserved === 'user') chips.push({ label: 'reserved for you', tone: 'dim' });
-  if (task.attempt > 1) chips.push({ label: `attempt ${task.attempt}`, tone: 'dim' });
   return chips;
 }
 
@@ -251,7 +284,19 @@ export function waitSentence(task: Task): string {
   if (waitOnUser(task) && wait.verification) {
     return 'This row is finished and waits on your approval.';
   }
-  if (waitOnUser(task) && wait.kind === 'decision') return 'A decision is waiting on you.';
+  if (waitOnUser(task)) {
+    switch (task.request?.kind) {
+      case 'clarification':
+        return 'A question is waiting on your answer.';
+      case 'exception':
+        return 'A fault is waiting on your disposition.';
+      case 'teaching':
+        return 'A recurring trouble is waiting on your lesson.';
+      case 'decision':
+      case undefined:
+        return 'A decision is waiting on you.';
+    }
+  }
   if (wait.kind === 'dependency') return `Waiting on ${wait.on ?? 'another row'}.`;
   if (wait.kind === 'resource') return 'Waiting on a resource.';
   return 'Waiting.';
@@ -290,10 +335,6 @@ function shortTarget(target: string): string {
 }
 
 /** The lane a card belongs to: one lane per state, named as the state is. */
-function laneOf(status: TaskStatus): LaneView['key'] {
-  return status;
-}
-
 /** One card, resolved. */
 function cardView(
   row: BoardRow,
@@ -334,7 +375,7 @@ function cardView(
     estimate: estimate === null ? null : estimate.words,
     ratio,
     tone,
-    chips: chipsOf(task, row.marks, row.updated_secs_ago),
+    chips: chipsOf(row),
     links: linksOf(task),
     rollup: row.rollup === null ? null : `${row.rollup[0]}/${row.rollup[1]}`,
     updatedAt: task.updated_at.secs_since_epoch,
@@ -353,6 +394,7 @@ export function boardView(
   board: BoardWire,
   org: string,
   project: string,
+  nowSecs: number = Math.floor(Date.now() / 1_000),
 ): BoardView {
   const row = board.projects.find(
     (entry) => entry.project.org === org && entry.project.name === project,
@@ -363,14 +405,15 @@ export function boardView(
   // everything not yet started leads, then the lane that wants the reader,
   // then the work. `pending` reads Backlog - the state never had a name of
   // its own on this page, and the pool is what it is.
+  //
+  // **Live work only.** A terminal row leaves the bulk board at once (the
+  // read drops it), so a Completed, Failed or Canceled lane here would
+  // draw empty forever; finished work is the `archived` toggle's.
   const lanes = (
     [
       ['pending', 'Backlog'],
       ['waiting', 'Waiting'],
       ['in_progress', 'In progress'],
-      ['completed', 'Completed'],
-      ['failed', 'Failed'],
-      ['canceled', 'Canceled'],
     ] as const
   ).map(([key, name]) => ({ key, name, count: 0, cards: [] as BoardCardView[] }));
   if (row === undefined) {
@@ -394,7 +437,7 @@ export function boardView(
   });
   const subjectOf = (parent: string | null): string | null =>
     parent === null ? null : (ordered.find((e) => e.task.id === parent)?.task.subject ?? null);
-  const laneName = new Map(lanes.map((lane) => [lane.key, lane.name]));
+  const laneName = new Map<string, string>(lanes.map((lane) => [lane.key, lane.name]));
   const childrenOf = (id: string): { id: string; label: string }[] =>
     ordered
       .filter((e) => e.task.parent === id)
@@ -403,7 +446,7 @@ export function boardView(
         label: `${laneName.get(e.task.status) ?? e.task.status} \u{b7} ${e.task.subject}`,
       }));
   for (const entry of ordered) {
-    const target = lanes.find((lane) => lane.key === laneOf(entry.task.status));
+    const target = lanes.find((lane) => lane.key === entry.task.status);
     if (target === undefined) continue;
     target.cards.push(cardView(entry, subjectOf(entry.task.parent), childrenOf(entry.task.id)));
   }
@@ -424,6 +467,10 @@ export function boardView(
         subject: entry.task.subject,
         owner: entry.task.owner === null ? null : entry.task.owner.label,
         verification: entry.task.waiting_on?.verification === true,
+        kind:
+          entry.task.waiting_on?.verification === true ? null : (entry.task.request?.kind ?? null),
+        options: entry.task.request?.options ?? [],
+        teachingClass: entry.task.request?.class ?? null,
         // The ask is the wait's own detail where it states one, else the row's
         // detail - a look parks with no wait detail, and its ask is the row's
         // own words - else the state's sentence.
@@ -434,7 +481,13 @@ export function boardView(
           (link) => artifact === null || link.href !== artifact.href,
         ),
         artifact,
-        age: fmtSecs(entry.updated_secs_ago),
+        // The wait's own age, never the row's last edit: a wait that gained a
+        // link or a park is no younger a wait.
+        age: fmtSecs(
+          entry.task.waiting_on?.since === null || entry.task.waiting_on?.since === undefined
+            ? entry.updated_secs_ago
+            : Math.max(0, nowSecs - entry.task.waiting_on.since.secs_since_epoch),
+        ),
         root: entry.task.parent === null,
         // Counted from the rows themselves, NOT from the rollup: the rollup's
         // first number counts completed children, and a failed or canceled

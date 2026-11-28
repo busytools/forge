@@ -4,7 +4,16 @@
   import type { ServiceReport } from '../wire/fleet';
   import type { BoardRow, ByWire, TaskStatus } from '../wire/home';
   import { followable } from '../home/view';
-  import { artifactOf, fmtSecs, waitOnUser, waitSentence, type WaitingView } from './view';
+  import BoardField from './BoardField.svelte';
+  import {
+    artifactOf,
+    DISPOSITIONS,
+    fmtSecs,
+    waitOnUser,
+    waitSentence,
+    type WaitingView,
+  } from './view';
+  import type { BoardVoice } from './voice';
 
   /**
    * One row's own page, over the board: what the row IS (its fields and
@@ -25,6 +34,7 @@
     onclose,
     tasks = [],
     onjump = null,
+    voice = null,
   }: {
     row: BoardRow;
     /**
@@ -43,6 +53,8 @@
     tasks?: { id: string; label: string }[];
     /** The board's jump, so picking one of those tasks lands on its card. */
     onjump?: ((id: string) => void) | null;
+    /** The page's own take, for this row's word boxes; `null` without one. */
+    voice?: BoardVoice | null;
   } = $props();
 
   const task = $derived(row.task);
@@ -130,6 +142,32 @@
 
   let answer = $state('');
   let sendBack = $state('');
+
+  /**
+   * The answer a kind needs, worded as the card bar's own door: a decision's
+   * choice, a clarification's text, an exception's disposition - and a
+   * teaching's text, which is also the lesson its policy note is written
+   * from. **The drawer never sends words alone**: a words-only answer has no
+   * value for the ask's kind, which the core refuses.
+   */
+  function answerAsk(value: { choice?: string; text?: string; disposition?: string }): void {
+    // **A decision with no enumerated options takes the typed words as its
+    // CHOICE**: the core refuses free text for a decision, and the words are
+    // the only form the row's answer can take.
+    const shaped =
+      task.request?.kind === 'decision' && value.text !== undefined
+        ? { choice: value.text }
+        : value;
+    const command: Record<string, unknown> = {
+      project: task.project_name,
+      id: task.id,
+      ...shaped,
+    };
+    if (task.request?.kind === 'teaching') command['lesson'] = value.text ?? '';
+    const note = answer.trim();
+    if (value.text === undefined && note !== '') command['words'] = note;
+    onact({ task_answer: command });
+  }
 
   /** The drawer takes the keyboard as it mounts and on Escape gives it back. */
   let root = $state<HTMLElement | null>(null);
@@ -332,12 +370,13 @@
                     })}>approve</button
                 >
               {/if}
-              <input
-                data-editor="board"
-                type="text"
+              <BoardField
+                id="{task.id}:sendback"
+                value={sendBack}
+                oninput={(text: string) => (sendBack = text)}
+                {voice}
                 placeholder="what to change"
-                aria-label="what to change (sent back with it)"
-                bind:value={sendBack}
+                label="what to change (sent back with it)"
                 onkeydown={(event: KeyboardEvent) => {
                   // **Enter is the box's own action** (Ved, 2026-10-15): the
                   // same key that sends everywhere sends this back, and an
@@ -371,29 +410,58 @@
             </div>
           {:else}
             <div class="answer">
-              <input
-                data-editor="board"
-                type="text"
-                placeholder="your answer"
-                bind:value={answer}
-                onkeydown={(event: KeyboardEvent) => {
-                  // Enter answers, as the button does (Ved, 2026-10-15).
-                  if (event.key !== 'Enter' || event.shiftKey) return;
-                  event.preventDefault();
-                  if (answer.trim() === '') return;
-                  onact({
-                    task_answer: { project: task.project_name, id: task.id, words: answer },
-                  });
-                }}
-              />
-              <button
-                type="button"
-                class="dr-btn go"
-                onclick={() =>
-                  onact({
-                    task_answer: { project: task.project_name, id: task.id, words: answer },
-                  })}>answer</button
-              >
+              {#if task.request?.kind === 'decision' && task.request.options.length > 0}
+                {#each task.request.options as option (option)}
+                  <button
+                    type="button"
+                    class="dr-btn go"
+                    onclick={() => answerAsk({ choice: option })}>{option}</button
+                  >
+                {/each}
+                <BoardField
+                  id="{task.id}:note"
+                  value={answer}
+                  oninput={(text: string) => (answer = text)}
+                  {voice}
+                  placeholder="a note (optional)"
+                  label="the note sent with the choice"
+                />
+              {:else if task.request?.kind === 'exception'}
+                {#each DISPOSITIONS as disposition (disposition)}
+                  <button type="button" class="dr-btn go" onclick={() => answerAsk({ disposition })}
+                    >{disposition}</button
+                  >
+                {/each}
+                <BoardField
+                  id="{task.id}:note"
+                  value={answer}
+                  oninput={(text: string) => (answer = text)}
+                  {voice}
+                  placeholder="a note (optional)"
+                  label="the note sent with the disposition"
+                />
+              {:else}
+                <BoardField
+                  id="{task.id}:answer"
+                  value={answer}
+                  oninput={(text: string) => (answer = text)}
+                  {voice}
+                  placeholder={task.request?.kind === 'teaching' ? 'the lesson' : 'your answer'}
+                  label={task.request?.kind === 'teaching'
+                    ? 'the lesson that settles the class'
+                    : 'your answer'}
+                  onkeydown={(event: KeyboardEvent) => {
+                    // Enter answers, as the button does (Ved, 2026-10-15).
+                    if (event.key !== 'Enter' || event.shiftKey) return;
+                    event.preventDefault();
+                    if (answer.trim() === '') return;
+                    answerAsk({ text: answer });
+                  }}
+                />
+                <button type="button" class="dr-btn go" onclick={() => answerAsk({ text: answer })}
+                  >{task.request?.kind === 'teaching' ? 'settle the class' : 'answer'}</button
+                >
+              {/if}
             </div>
           {/if}
         {/if}

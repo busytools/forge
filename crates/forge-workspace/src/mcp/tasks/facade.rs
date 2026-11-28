@@ -11,11 +11,13 @@ use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use forge_primitives::tasks::{
-    By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, WaitingKind,
+    AnswerValue, AskKind, By, Deadline, DefaultIfIgnored, Disposition, Estimate, Evidence,
+    LinkKind, Request, Task, TaskId, TaskKind, TaskLink, TaskStatus, Verify, Waiting, WaitingKind,
 };
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
+use crate::store::policy::PolicyNote;
 use crate::tasks::{ClaimError, IdError, MoveError};
 use crate::workspace::Workspace;
 
@@ -56,7 +58,41 @@ impl TaskLinkDraft {
             label: self.label.clone(),
             target: self.target.clone(),
             state: None,
+            last_check: None,
             added_at: at,
+        }
+    }
+}
+
+/// What a completion rests on, as a caller states it. The verdict is
+/// forge's own: a stated claim always arrives unchecked, so a new claim
+/// never inherits the last one's stamp.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct EvidenceDraft {
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub excerpt: Option<String>,
+}
+
+impl EvidenceDraft {
+    fn to_evidence(&self) -> Evidence {
+        let named = |value: &Option<String>| {
+            value.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
+        };
+        Evidence {
+            commit: named(&self.commit),
+            path: named(&self.path),
+            excerpt: self
+                .excerpt
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(Evidence::bounded_excerpt),
+            verified_at: None,
+            problem: None,
         }
     }
 }
@@ -80,6 +116,12 @@ pub(crate) struct TaskDraft {
     pub parent: Option<String>,
     #[serde(default)]
     pub estimate: Option<String>,
+    /// Finite work or standing work; omitted reads as finite.
+    #[serde(default)]
+    pub kind: Option<forge_primitives::tasks::TaskKind>,
+    /// A standing row's check interval, in the estimate grammar.
+    #[serde(default)]
+    pub cadence: Option<String>,
     /// Queue order; lower reads first.
     #[serde(default)]
     pub rank: Option<i64>,
@@ -91,6 +133,24 @@ pub(crate) struct TaskDraft {
     pub reserved: Option<forge_primitives::tasks::ReservedBy>,
     #[serde(default)]
     pub links: Vec<TaskLinkDraft>,
+    /// What the completion will rest on. Stated at create so a row can be
+    /// minted with its claim, or later by an update.
+    #[serde(default)]
+    pub evidence: Option<EvidenceDraft>,
+}
+
+/// An ask on the person as `tasks__wait` states it: the kind, the question,
+/// and what the kind needs - a decision's options, a teaching's class, a
+/// deadline with its named default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AskDraft {
+    pub kind: AskKind,
+    pub question: String,
+    pub options: Vec<String>,
+    pub class: Option<String>,
+    /// Duration words ("2h", "1d"); `None` means no deadline.
+    pub due: Option<String>,
+    pub default: Option<DefaultIfIgnored>,
 }
 
 /// The tree a `tasks__delete` removed: the named task as it stood, and how
@@ -133,6 +193,21 @@ pub(crate) struct TaskPatch {
     /// Links to take off, by exact target.
     #[serde(default)]
     pub links_remove: Vec<String>,
+    /// A new completion claim. It arrives unchecked, so restating it
+    /// clears any earlier verdict - the gate stamps the next check.
+    #[serde(default)]
+    pub evidence: Option<EvidenceDraft>,
+    /// A deadline for the row's current wait, in the estimate grammar; it
+    /// arrives with `default`.
+    #[serde(default)]
+    pub due: Option<String>,
+    /// The named default that runs when `due` passes.
+    #[serde(default)]
+    pub default: Option<DefaultIfIgnored>,
+    /// The version the caller read. A stated version the row is not at
+    /// refuses the write, so a lost update is visible.
+    #[serde(default)]
+    pub version: Option<u64>,
 }
 
 impl TaskPatch {
@@ -183,6 +258,9 @@ impl TaskPatch {
             }
         }
         task.links.retain(|l| !self.links_remove.contains(&l.target));
+        if let Some(evidence) = &self.evidence {
+            task.evidence = Some(evidence.to_evidence());
+        }
         if let Some(estimate) = estimate {
             task.estimate = Some(estimate);
         }
@@ -217,13 +295,14 @@ fn resolve_parent(
 }
 
 /// The list's narrowing, one definition for the real path and the mock:
-/// `owner` by label, `parent` by id, `status` by state, `ready` by the
-/// board's own mark.
+/// `owner` by label, `parent` by id, `status` by state, `kind` by the
+/// row's work shape, and `ready` by the board's own mark.
 fn narrow_rows(
     rows: Vec<crate::board::BoardRow>,
     owner: Option<&str>,
     parent: Option<&TaskId>,
     status: Option<TaskStatus>,
+    kind: Option<forge_primitives::tasks::TaskKind>,
     ready: Option<bool>,
 ) -> Vec<crate::board::BoardRow> {
     rows.into_iter()
@@ -232,8 +311,38 @@ fn narrow_rows(
         })
         .filter(|row| parent.is_none_or(|id| row.task.parent.as_ref() == Some(id)))
         .filter(|row| status.is_none_or(|wanted| row.task.status == wanted))
+        .filter(|row| kind.is_none_or(|wanted| row.task.kind == wanted))
         .filter(|row| ready.is_none_or(|wanted| row.marks.ready == wanted))
         .collect()
+}
+
+/// The archived row a stated id names: an exact id first, then a unique
+/// prefix. `IdError` carries the same two cases the live resolution does.
+fn find_archived(
+    archived: &[forge_primitives::tasks::Task],
+    stated: &TaskId,
+) -> Result<forge_primitives::tasks::Task, IdError> {
+    if let Some(found) = archived.iter().find(|task| task.id == *stated) {
+        return Ok(found.clone());
+    }
+    if stated.as_str().is_empty() {
+        return Err(IdError::NotFound);
+    }
+    let matched: Vec<&forge_primitives::tasks::Task> =
+        archived.iter().filter(|task| task.id.as_str().starts_with(stated.as_str())).collect();
+    match matched.as_slice() {
+        [found] => Ok((*found).clone()),
+        [] => Err(IdError::NotFound),
+        several => Err(IdError::Ambiguous(
+            several
+                .iter()
+                .map(|task| crate::tasks::IdCandidate {
+                    id: task.id.clone(),
+                    subject: task.subject.clone(),
+                })
+                .collect(),
+        )),
+    }
 }
 
 /// The task tools' view of the workspace. Sync - task-list mutations are
@@ -244,15 +353,25 @@ pub(crate) trait TasksFacade: Send + Sync {
     fn create_task(&self, caller: &SessionSlot, draft: TaskDraft) -> Result<Task, TasksError>;
 
     /// The caller's project's board rows, narrowed by `owner` (a label),
-    /// `parent` (a task id), `status` and `ready` when supplied.
+    /// `parent` (a task id), `status`, `kind` and `ready` when supplied.
     fn list_tasks(
         &self,
         caller: &SessionSlot,
         owner: Option<&str>,
         parent: Option<&TaskId>,
         status: Option<TaskStatus>,
+        kind: Option<forge_primitives::tasks::TaskKind>,
         ready: Option<bool>,
     ) -> Vec<crate::board::BoardRow>;
+
+    /// One row, whole: the record, its derived facts and its history; the
+    /// archive's rows come back with their `archived_at` set and no
+    /// history. Backs `tasks__get`.
+    fn get_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+    ) -> Result<crate::board::BoardRow, TasksError>;
 
     /// Apply `patch` to the task `id` in the caller's project and return
     /// the record as the write left it. A missing id names its case:
@@ -269,20 +388,22 @@ pub(crate) trait TasksFacade: Send + Sync {
     /// Remove the task `id` and its descendants within the caller's
     /// project, returning the named task as it stood and how many
     /// descendants went with it. A missing id names its case the way
-    /// [`TasksFacade::update_task`] does.
-    fn delete_task(&self, caller: &SessionSlot, id: &TaskId)
-    -> Result<RemovedTaskTree, TasksError>;
-
-    /// Claim `id`, or the first ready row of `epic` by rank, for the
-    /// caller. Backs `tasks__claim`.
-    fn claim_task(
+    /// [`TasksFacade::update_task`] does. `version` is the row as the
+    /// caller read it.
+    fn delete_task(
         &self,
         caller: &SessionSlot,
-        id: Option<&str>,
-        epic: Option<&str>,
-    ) -> Result<Task, TasksError>;
+        id: &TaskId,
+        version: u64,
+    ) -> Result<RemovedTaskTree, TasksError>;
 
-    /// Put the caller's row `id` into waiting. Backs `tasks__wait`.
+    /// Claim `id` for the caller at the version they read. Backs
+    /// `tasks__claim`.
+    fn claim_task(&self, caller: &SessionSlot, id: &str, version: u64) -> Result<Task, TasksError>;
+
+    /// Put the caller's row `id` into waiting. Backs `tasks__wait`; an ask
+    /// on the person arrives as a draft carrying the kind and what the
+    /// kind needs. `version` is the row as the caller read it.
     fn wait_task(
         &self,
         caller: &SessionSlot,
@@ -290,7 +411,37 @@ pub(crate) trait TasksFacade: Send + Sync {
         kind: WaitingKind,
         detail: Option<String>,
         on: Option<&TaskId>,
+        ask: Option<AskDraft>,
+        version: u64,
     ) -> Result<Task, TasksError>;
+
+    /// Record the person's answer to an ask: the value the kind needed -
+    /// a decision's `choice`, a clarification's `text`, an exception's
+    /// `disposition` - the note they left, and a teaching's `lesson`.
+    /// Backs `tasks__answer`.
+    fn answer_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        choice: Option<&str>,
+        text: Option<&str>,
+        disposition: Option<&str>,
+        note: Option<&str>,
+        lesson: Option<&str>,
+        version: u64,
+    ) -> Result<Task, TasksError>;
+
+    /// The caller's project's settled policy notes. Backs `tasks__policy`.
+    fn policy_notes(&self, caller: &SessionSlot) -> Vec<PolicyNote>;
+
+    /// Add a policy note directly - the lead's own write, beside the one a
+    /// teaching answer lands.
+    fn add_policy_note(
+        &self,
+        caller: &SessionSlot,
+        class: &str,
+        text: &str,
+    ) -> Result<PolicyNote, TasksError>;
 
     /// The lead completes a look wait with the approval the user gave,
     /// quoted. Backs `tasks__approve`; the core refuses a non-lead.
@@ -299,6 +450,7 @@ pub(crate) trait TasksFacade: Send + Sync {
         caller: &SessionSlot,
         id: &TaskId,
         approval: &str,
+        version: u64,
     ) -> Result<Task, TasksError>;
 }
 
@@ -325,30 +477,101 @@ impl TasksFacade for ProdTasksFacade {
             ),
             None => None,
         };
+        let cadence = match draft.cadence.as_deref() {
+            Some(words) => Some(
+                Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
+            ),
+            None => None,
+        };
         let links = draft.links.iter().map(|draft| draft.to_link(now)).collect();
-        let task = Task {
+        // **Only the lead mints a user gate.** The tool descriptions say
+        // so; creation is where a worker would otherwise route around it.
+        if draft.verify == Some(Verify::User) && caller.label() != crate::LEAD_LABEL {
+            return Err(TasksError::Refused(
+                "only the project lead mints a user gate; hand the ask to your lead, and it \
+                 creates or gates the row"
+                    .to_owned(),
+            ));
+        }
+        let mut task = Task {
             id: TaskId::from(uuid::Uuid::new_v4().to_string()),
             project_name: cx.project_name.clone(),
             subject: draft.subject,
             active_form: draft.active_form,
             detail: draft.detail,
             status: draft.status.unwrap_or(TaskStatus::Pending),
+            kind: draft.kind.unwrap_or_default(),
             owner: draft
                 .owner
                 .map(|label| SessionSlot::new(&cx.project_org, &cx.project_name, label)),
             parent: resolve_parent(&ws, &cx.project_name, draft.parent.as_deref())?,
             waiting_on: None,
+            request: None,
             estimate,
+            cadence,
             rank: draft.rank,
             verify: draft.verify,
             attested: None,
             reserved: draft.reserved,
             links,
-            attempt: 0,
+            evidence: draft.evidence.as_ref().map(EvidenceDraft::to_evidence),
+            version: 0,
             archived_at: None,
             created_at: now,
             updated_at: now,
         };
+        // A row's kind fixes its clock: standing work is checked on a
+        // cadence, finite work against an estimate. Neither can be
+        // corrected after creation, so a mismatched pair is refused here
+        // rather than stored as a row that reads wrong forever.
+        match (task.kind, task.cadence.is_some(), task.estimate.is_some()) {
+            (TaskKind::Standing, false, _) => {
+                return Err(TasksError::Refused(
+                    "a standing row needs a `cadence` (30m, 2h, 1d, 1w): it is the interval its \
+                     check comes due on"
+                        .to_owned(),
+                ));
+            }
+            (TaskKind::Standing, _, true) => {
+                return Err(TasksError::Refused(
+                    "a standing row is checked on its `cadence`, not an `estimate`; state the \
+                     interval instead"
+                        .to_owned(),
+                ));
+            }
+            (TaskKind::Finite, true, _) => {
+                return Err(TasksError::Refused(
+                    "`cadence` is standing work's; a finite row takes an `estimate` and is \
+                     chased when it overruns"
+                        .to_owned(),
+                ));
+            }
+            _ => {}
+        }
+        // A row minted straight into `completed` is a completion claim
+        // like any other, and goes through the same gate: creation is not
+        // a way around the evidence.
+        if task.status == TaskStatus::Completed {
+            ws.verify_completion_evidence(&cx.project_name, &mut task)
+                .map_err(|refused| TasksError::Refused(refused.to_string()))?;
+            // Nor a way around the look park: a finished row whose own
+            // completion waits on the user lands waiting on that look.
+            if task.verify == Some(Verify::User) {
+                task.waiting_on = Some(Waiting {
+                    kind: Some(WaitingKind::User),
+                    detail: None,
+                    on: None,
+                    verification: true,
+                    parked: false,
+                    due: Some(crate::tasks::default_user_deadline(now)),
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
+                    since: Some(now),
+                });
+                task.status = TaskStatus::Waiting;
+            }
+        }
         ws.push_task(task.clone());
         Ok(task)
     }
@@ -359,6 +582,7 @@ impl TasksFacade for ProdTasksFacade {
         owner: Option<&str>,
         parent: Option<&TaskId>,
         status: Option<TaskStatus>,
+        kind: Option<forge_primitives::tasks::TaskKind>,
         ready: Option<bool>,
     ) -> Vec<crate::board::BoardRow> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
@@ -371,7 +595,62 @@ impl TasksFacade for ProdTasksFacade {
         let parent = parent.map(|stated| {
             ws.resolve_task_id(&cx.project_name, stated).unwrap_or_else(|_| stated.clone())
         });
-        narrow_rows(rows, owner, parent.as_ref(), status, ready)
+        narrow_rows(rows, owner, parent.as_ref(), status, kind, ready)
+    }
+
+    fn get_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+    ) -> Result<crate::board::BoardRow, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        let rows =
+            ws.board_rows(&cx.project_name, SystemTime::now(), crate::board::DEFAULT_STALE_SECS);
+        let live = match ws.resolve_task_id(&cx.project_name, id) {
+            Ok(resolved) => rows.into_iter().find(|row| row.task.id == resolved),
+            Err(IdError::Ambiguous(candidates)) => {
+                return Err(TasksError::Refused(crate::tasks::ambiguous_words(&candidates)));
+            }
+            Err(IdError::NotFound) => None,
+        };
+        if let Some(row) = live {
+            return Ok(row);
+        }
+        // The archive: a row that has left the live set is still readable,
+        // and reads as what it is - closed, with no live history.
+        // **An unreadable archive is not an absent row.** Answering "no such
+        // task" for a store that could not be read would tell a caller the
+        // record never existed.
+        let archived = match ws.archived_tasks_for_project_checked(&cx.project_name) {
+            Ok(rows) => rows,
+            Err(reason) => {
+                return Err(TasksError::Refused(format!(
+                    "the task archive could not be read ({reason}), so the row may be there; \
+                     the read is retryable"
+                )));
+            }
+        };
+        match find_archived(&archived, id) {
+            Ok(task) => Ok(crate::board::BoardRow {
+                task,
+                worked_secs: 0,
+                updated_secs_ago: 0,
+                owner_live: true,
+                wait_secs: None,
+                marks: crate::board::Marks::default(),
+                rollup: None,
+                parent_subject: None,
+                history: Vec::new(),
+                history_total: 0,
+            }),
+            Err(error) => Err(match error {
+                IdError::NotFound => missing_task_error(&ws, &cx.project_name, id),
+                IdError::Ambiguous(candidates) => {
+                    TasksError::Refused(crate::tasks::ambiguous_words(&candidates))
+                }
+            }),
+        }
     }
 
     fn update_task(
@@ -382,6 +661,15 @@ impl TasksFacade for ProdTasksFacade {
     ) -> Result<Task, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        // The gate is the lead's to mint here as well: an update is the
+        // other door creation has, and the descriptions promise one rule.
+        if patch.verify == Some(Verify::User) && caller.label() != crate::LEAD_LABEL {
+            return Err(TasksError::Refused(
+                "only the project lead mints a user gate; hand the ask to your lead, and it \
+                 gates the row"
+                    .to_owned(),
+            ));
+        }
         let estimate = match patch.estimate.as_deref() {
             Some(words) => Some(
                 Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
@@ -392,10 +680,46 @@ impl TasksFacade for ProdTasksFacade {
         if let Some(parent) = resolve_parent(&ws, &cx.project_name, patch.parent.as_deref())? {
             patch.parent = Some(parent.as_str().to_owned());
         }
+        // A deadline arrives whole: a duration with its named default.
+        let deadline = match (patch.due.as_deref(), patch.default) {
+            (None, None) => None,
+            (Some(words), Some(default)) => {
+                let Some(period) = Estimate::parse(words) else {
+                    return Err(TasksError::BadEstimate(words.to_owned()));
+                };
+                Some(Deadline {
+                    at: SystemTime::now() + std::time::Duration::from_secs(period.secs),
+                    default,
+                    ran_at: None,
+                })
+            }
+            (Some(_), None) => {
+                return Err(TasksError::Refused(
+                    "a deadline names its default-if-ignored: escalate, expire or reask".to_owned(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(TasksError::Refused(
+                    "a default-if-ignored needs the `due` it runs at".to_owned(),
+                ));
+            }
+        };
         let at = SystemTime::now();
-        ws.update_task(&cx.project_name, id, By::Seat(caller.clone()), |task| {
-            patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
-        })
+        let expected = patch.version;
+        ws.update_task_at_version(
+            &cx.project_name,
+            id,
+            By::Seat(caller.clone()),
+            expected,
+            |task| {
+                patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
+                if let Some(deadline) = deadline
+                    && let Some(wait) = task.waiting_on.as_mut()
+                {
+                    wait.due = Some(deadline);
+                }
+            },
+        )
         .map_err(|refused| TasksError::Refused(refused.to_string()))?
         .ok_or_else(|| missing_task_error(&ws, &cx.project_name, id))
     }
@@ -404,6 +728,7 @@ impl TasksFacade for ProdTasksFacade {
         &self,
         caller: &SessionSlot,
         id: &TaskId,
+        version: u64,
     ) -> Result<RemovedTaskTree, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
@@ -418,7 +743,7 @@ impl TasksFacade for ProdTasksFacade {
             }
         };
         let removed = ws
-            .remove_task_tree(&cx.project_name, &resolved)
+            .remove_task_tree_at_version(&cx.project_name, &resolved, Some(version))
             .map_err(|refused| TasksError::Refused(refused.to_string()))?;
         // The tree can be gone by the time the removal runs only if
         // another seat removed it between the resolve and the lock.
@@ -428,27 +753,13 @@ impl TasksFacade for ProdTasksFacade {
         Ok(RemovedTaskTree { task, descendants_removed: removed.len() - 1 })
     }
 
-    fn claim_task(
-        &self,
-        caller: &SessionSlot,
-        id: Option<&str>,
-        epic: Option<&str>,
-    ) -> Result<Task, TasksError> {
+    fn claim_task(&self, caller: &SessionSlot, id: &str, version: u64) -> Result<Task, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        let by_id = id.map(TaskId::from);
-        let in_epic = epic.map(TaskId::from);
-        match ws.claim_task(&cx.project_name, caller, by_id.as_ref(), in_epic.as_ref()) {
+        let stated = TaskId::from(id);
+        match ws.claim_task_at_version(&cx.project_name, caller, &stated, Some(version)) {
             Ok(task) => Ok(task),
-            Err(ClaimError::NotFound) => {
-                // A claim states one of the two; the core answers
-                // NotReady when it states neither.
-                let stated = by_id.as_ref().or(in_epic.as_ref());
-                Err(match stated {
-                    Some(stated) => missing_task_error(&ws, &cx.project_name, stated),
-                    None => TasksError::Refused(ClaimError::NotFound.to_string()),
-                })
-            }
+            Err(ClaimError::NotFound) => Err(missing_task_error(&ws, &cx.project_name, &stated)),
             Err(refused) => Err(TasksError::Refused(refused.to_string())),
         }
     }
@@ -460,10 +771,154 @@ impl TasksFacade for ProdTasksFacade {
         kind: WaitingKind,
         detail: Option<String>,
         on: Option<&TaskId>,
+        ask: Option<AskDraft>,
+        version: u64,
     ) -> Result<Task, TasksError> {
+        // **The request rides every bulk row it is on**, so its record is
+        // bounded where it enters: a question one sentence, its options a
+        // few short phrases, its class a slug.
+        const MAX_QUESTION: usize = 280;
+        const MAX_OPTION: usize = 120;
+        const MAX_OPTIONS: usize = 8;
+        const MAX_CLASS: usize = 64;
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        match ws.wait_task(&cx.project_name, id, caller, kind, detail, on) {
+        // **An ask on the person is the lead's to raise.** The
+        // instructions and the wait description both say so; a worker's
+        // ask goes through its lead, which owns what the user is shown.
+        if (kind == WaitingKind::User || ask.is_some()) && caller.label() != crate::LEAD_LABEL {
+            return Err(TasksError::Refused(
+                "only the project lead raises an ask on the user; report the question to \
+                 your lead and let it put the row to them"
+                    .to_owned(),
+            ));
+        }
+        let waited = if let Some(draft) = ask {
+            let question = draft.question.trim();
+            if question.is_empty() {
+                return Err(TasksError::Refused(
+                    "an ask needs `question`: the ask in one sentence".to_owned(),
+                ));
+            }
+            if question.chars().count() > MAX_QUESTION {
+                return Err(TasksError::Refused(format!(
+                    "the question is {} characters; keep it to {MAX_QUESTION}",
+                    question.chars().count(),
+                )));
+            }
+            match draft.kind {
+                AskKind::Decision => {
+                    if draft.options.is_empty() {
+                        return Err(TasksError::Refused(
+                            "a decision enumerates at least one option; a question with a \
+                             free-text answer is a clarification"
+                                .to_owned(),
+                        ));
+                    }
+                    if draft.options.len() > MAX_OPTIONS {
+                        return Err(TasksError::Refused(format!(
+                            "{} options is more than a card can carry; list at most {MAX_OPTIONS}",
+                            draft.options.len(),
+                        )));
+                    }
+                    if let Some(over) = draft
+                        .options
+                        .iter()
+                        .find(|o| o.trim().is_empty() || o.chars().count() > MAX_OPTION)
+                    {
+                        return Err(TasksError::Refused(format!(
+                            "every option is a short phrase of at most {MAX_OPTION} characters; \
+                             \"{over}\" is not"
+                        )));
+                    }
+                }
+                AskKind::Clarification | AskKind::Exception => {
+                    if !draft.options.is_empty() {
+                        return Err(TasksError::Refused(
+                            "only a decision carries options; a clarification is answered in \
+                             words and an exception by a disposition"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                AskKind::Teaching => {
+                    if !draft.options.is_empty() {
+                        return Err(TasksError::Refused(
+                            "only a decision carries options; a teaching is answered with the \
+                             lesson"
+                                .to_owned(),
+                        ));
+                    }
+                }
+            }
+            let class = if draft.kind == AskKind::Teaching {
+                let Some(class) = draft.class.as_deref().map(str::trim).filter(|c| !c.is_empty())
+                else {
+                    return Err(TasksError::Refused(
+                        "a teaching names its `class`: the recurring trouble the lesson settles"
+                            .to_owned(),
+                    ));
+                };
+                if class.chars().count() > MAX_CLASS {
+                    return Err(TasksError::Refused(format!(
+                        "the class is {} characters; keep it to {MAX_CLASS}",
+                        class.chars().count(),
+                    )));
+                }
+                Some(class.to_owned())
+            } else {
+                if draft.class.is_some() {
+                    return Err(TasksError::Refused(
+                        "only a teaching carries a `class`".to_owned(),
+                    ));
+                }
+                None
+            };
+            // **A deadline names the default that runs when it passes**,
+            // and there is no approve default: the pair arrives together.
+            let due = match (draft.due.as_deref(), draft.default) {
+                (None, None) => None,
+                (Some(words), Some(default)) => {
+                    let Some(period) = Estimate::parse(words) else {
+                        return Err(TasksError::BadEstimate(words.to_owned()));
+                    };
+                    Some(Deadline {
+                        at: SystemTime::now() + std::time::Duration::from_secs(period.secs),
+                        default,
+                        ran_at: None,
+                    })
+                }
+                (Some(_), None) => {
+                    return Err(TasksError::Refused(
+                        "a deadline names its default-if-ignored: escalate, expire or reask"
+                            .to_owned(),
+                    ));
+                }
+                (None, Some(_)) => {
+                    return Err(TasksError::Refused(
+                        "a default-if-ignored needs the `due` it runs at".to_owned(),
+                    ));
+                }
+            };
+            ws.wait_request_task_at_version(
+                &cx.project_name,
+                id,
+                caller,
+                detail,
+                Request {
+                    kind: draft.kind,
+                    question: question.to_owned(),
+                    options: draft.options,
+                    class,
+                    answer: None,
+                },
+                due,
+                Some(version),
+            )
+        } else {
+            ws.wait_task_at_version(&cx.project_name, id, caller, kind, detail, on, Some(version))
+        };
+        match waited {
             Ok(task) => Ok(task),
             Err(MoveError::NotFound) => {
                 // The row resolves first, so a row that is there means
@@ -481,15 +936,109 @@ impl TasksFacade for ProdTasksFacade {
         }
     }
 
+    fn answer_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        choice: Option<&str>,
+        text: Option<&str>,
+        disposition: Option<&str>,
+        note: Option<&str>,
+        lesson: Option<&str>,
+        version: u64,
+    ) -> Result<Task, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        // **One door, one value for the kind**: a decision's choice, a
+        // clarification's text, an exception's disposition. A teaching's
+        // text doubles as the lesson the policy note is written from.
+        let value = match (choice, text, disposition) {
+            (Some(choice), None, None) => AnswerValue::Choice(choice.trim().to_owned()),
+            (None, Some(text), None) => AnswerValue::Text(text.trim().to_owned()),
+            (None, None, Some(disposition)) => {
+                let Some(disposition) = Disposition::parse(disposition) else {
+                    return Err(TasksError::Refused(format!(
+                        "a disposition is one of {}; \"{disposition}\" is not",
+                        Disposition::ALL.map(Disposition::as_str).join(", "),
+                    )));
+                };
+                AnswerValue::Disposition(disposition)
+            }
+            _ => {
+                return Err(TasksError::Refused(
+                    "an answer states exactly one of `choice`, `text` or `disposition`".to_owned(),
+                ));
+            }
+        };
+        // The answer is the person's own act, relayed through a session:
+        // recording it as that session's move would attribute the value to
+        // the worker that typed it.
+        match ws.answer_decision_at_version(
+            &cx.project_name,
+            id,
+            By::User,
+            value,
+            note,
+            lesson,
+            Some(version),
+        ) {
+            Ok(Some(task)) => Ok(task),
+            Ok(None) => Err(missing_task_error(&ws, &cx.project_name, id)),
+            Err(refused) => Err(TasksError::Refused(refused.to_string())),
+        }
+    }
+
+    fn policy_notes(&self, caller: &SessionSlot) -> Vec<PolicyNote> {
+        let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
+        let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
+        ws.policy_notes_for_project(&cx.project_name)
+    }
+
+    fn add_policy_note(
+        &self,
+        caller: &SessionSlot,
+        class: &str,
+        text: &str,
+    ) -> Result<PolicyNote, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        if caller.label() != crate::LEAD_LABEL {
+            return Err(TasksError::Refused(
+                "only the project lead writes a policy note; hand the lesson to your lead"
+                    .to_owned(),
+            ));
+        }
+        let class = class.trim();
+        let text = text.trim();
+        if class.is_empty() || class.chars().count() > 64 {
+            return Err(TasksError::Refused(
+                "a policy class is a short slug, 1 to 64 characters".to_owned(),
+            ));
+        }
+        if text.is_empty() || text.chars().count() > 1_000 {
+            return Err(TasksError::Refused(
+                "a policy note is the lesson itself, 1 to 1000 characters".to_owned(),
+            ));
+        }
+        // The lead's own write records its source as any row carrying the
+        // class, or the lead's seat when none does.
+        ws.settle_policy(&cx.project_name, class, text, &TaskId::from("lead")).ok_or_else(|| {
+            TasksError::Refused(
+                "the policy note could not be written; this run's store is unavailable".to_owned(),
+            )
+        })
+    }
+
     fn attest_task(
         &self,
         caller: &SessionSlot,
         id: &TaskId,
         approval: &str,
+        version: u64,
     ) -> Result<Task, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        match ws.attest_task(&cx.project_name, id, caller, approval) {
+        match ws.attest_task_at_version(&cx.project_name, id, caller, approval, Some(version)) {
             Ok(Some(task)) => Ok(task),
             Ok(None) => Err(missing_task_error(&ws, &cx.project_name, id)),
             Err(refused) => Err(TasksError::Refused(refused.to_string())),
@@ -512,16 +1061,20 @@ fn mock_task(caller: &SessionSlot) -> Task {
         active_form: None,
         detail: None,
         status: TaskStatus::Pending,
+        kind: forge_primitives::tasks::TaskKind::Finite,
         owner: None,
         parent: None,
         waiting_on: None,
+        request: None,
         estimate: None,
+        cadence: None,
         rank: None,
         verify: None,
         attested: None,
         reserved: None,
         links: Vec::new(),
-        attempt: 0,
+        evidence: None,
+        version: 0,
         archived_at: None,
         created_at: now,
         updated_at: now,
@@ -532,13 +1085,21 @@ fn mock_task(caller: &SessionSlot) -> Task {
 #[cfg(test)]
 type ListCall = (Option<String>, Option<String>, Option<TaskStatus>, Option<bool>);
 
-/// One `tasks__claim` call: the caller, the epic and the project it asked for.
+/// One `tasks__claim` call: the caller and the row it asked for.
 #[cfg(test)]
-type ClaimCall = (SessionSlot, Option<String>, Option<String>);
+type ClaimCall = (SessionSlot, String);
 
-/// One `tasks__wait` call: the caller, the row, the kind, the detail and the row waited on.
+/// One `tasks__answer` call: the caller, the row, the value parts, and the
+/// note.
 #[cfg(test)]
-type WaitCall = (SessionSlot, TaskId, WaitingKind, Option<String>, Option<TaskId>);
+type AnswerCall =
+    (SessionSlot, TaskId, Option<String>, Option<String>, Option<String>, Option<String>);
+
+/// One `tasks__wait` call: the caller, the row, the wait kind, the detail,
+/// the row waited on, and the ask draft when the wait is on the person.
+#[cfg(test)]
+type WaitCall =
+    (SessionSlot, TaskId, WaitingKind, Option<String>, Option<TaskId>, Option<AskDraft>);
 
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
@@ -557,6 +1118,9 @@ pub(crate) struct MockTasksFacade {
     pub claim_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
     pub waited: parking_lot::Mutex<Vec<WaitCall>>,
     pub wait_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
+    pub answered: parking_lot::Mutex<Vec<AnswerCall>>,
+    pub answer_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
+    pub got: parking_lot::Mutex<Vec<(SessionSlot, TaskId)>>,
     pub attested: parking_lot::Mutex<Vec<(SessionSlot, TaskId, String)>>,
 }
 
@@ -581,6 +1145,7 @@ impl TasksFacade for MockTasksFacade {
             active_form: draft.active_form.clone(),
             detail: draft.detail.clone(),
             status: draft.status.unwrap_or(TaskStatus::Pending),
+            kind: draft.kind.unwrap_or_default(),
             owner: draft
                 .owner
                 .clone()
@@ -590,13 +1155,16 @@ impl TasksFacade for MockTasksFacade {
             // read a prefix here as unresolved.
             parent: draft.parent.as_deref().map(TaskId::from),
             waiting_on: None,
+            request: None,
             estimate: draft.estimate.as_deref().and_then(Estimate::parse),
+            cadence: draft.cadence.as_deref().and_then(Estimate::parse),
             rank: draft.rank,
             verify: draft.verify,
             attested: None,
             reserved: draft.reserved,
             links: draft.links.iter().map(|draft| draft.to_link(now)).collect(),
-            attempt: 0,
+            evidence: draft.evidence.as_ref().map(EvidenceDraft::to_evidence),
+            version: 0,
             archived_at: None,
             created_at: now,
             updated_at: now,
@@ -608,10 +1176,10 @@ impl TasksFacade for MockTasksFacade {
     fn claim_task(
         &self,
         caller: &SessionSlot,
-        id: Option<&str>,
-        epic: Option<&str>,
+        id: &str,
+        _version: u64,
     ) -> Result<Task, TasksError> {
-        self.claimed.lock().push((caller.clone(), id.map(str::to_owned), epic.map(str::to_owned)));
+        self.claimed.lock().push((caller.clone(), id.to_owned()));
         self.claim_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
     }
 
@@ -622,9 +1190,53 @@ impl TasksFacade for MockTasksFacade {
         kind: WaitingKind,
         detail: Option<String>,
         on: Option<&TaskId>,
+        ask: Option<AskDraft>,
+        _version: u64,
     ) -> Result<Task, TasksError> {
-        self.waited.lock().push((caller.clone(), id.clone(), kind, detail, on.cloned()));
+        self.waited.lock().push((caller.clone(), id.clone(), kind, detail, on.cloned(), ask));
         self.wait_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
+    }
+
+    fn answer_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        choice: Option<&str>,
+        text: Option<&str>,
+        disposition: Option<&str>,
+        note: Option<&str>,
+        lesson: Option<&str>,
+        _version: u64,
+    ) -> Result<Task, TasksError> {
+        self.answered.lock().push((
+            caller.clone(),
+            id.clone(),
+            choice.map(str::to_owned),
+            text.map(str::to_owned),
+            disposition.map(str::to_owned),
+            lesson.or(note).map(str::to_owned),
+        ));
+        self.answer_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
+    }
+
+    fn policy_notes(&self, _caller: &SessionSlot) -> Vec<PolicyNote> {
+        Vec::new()
+    }
+
+    fn add_policy_note(
+        &self,
+        caller: &SessionSlot,
+        class: &str,
+        text: &str,
+    ) -> Result<PolicyNote, TasksError> {
+        Ok(PolicyNote {
+            id: "mock-policy".to_owned(),
+            project_name: caller.project().to_owned(),
+            class: class.to_owned(),
+            text: text.to_owned(),
+            source_task: "mock".to_owned(),
+            at: SystemTime::UNIX_EPOCH,
+        })
     }
 
     fn attest_task(
@@ -632,6 +1244,7 @@ impl TasksFacade for MockTasksFacade {
         caller: &SessionSlot,
         id: &TaskId,
         approval: &str,
+        _version: u64,
     ) -> Result<Task, TasksError> {
         self.attested.lock().push((caller.clone(), id.clone(), approval.to_owned()));
         let mut task = mock_task(caller);
@@ -648,6 +1261,7 @@ impl TasksFacade for MockTasksFacade {
         owner: Option<&str>,
         parent: Option<&TaskId>,
         status: Option<TaskStatus>,
+        kind: Option<forge_primitives::tasks::TaskKind>,
         ready: Option<bool>,
     ) -> Vec<crate::board::BoardRow> {
         self.listed.lock().push((
@@ -656,7 +1270,21 @@ impl TasksFacade for MockTasksFacade {
             status,
             ready,
         ));
-        narrow_rows(self.rows.lock().clone(), owner, parent, status, ready)
+        narrow_rows(self.rows.lock().clone(), owner, parent, status, kind, ready)
+    }
+
+    fn get_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+    ) -> Result<crate::board::BoardRow, TasksError> {
+        self.got.lock().push((caller.clone(), id.clone()));
+        self.rows
+            .lock()
+            .iter()
+            .find(|row| row.task.id == *id)
+            .cloned()
+            .ok_or_else(|| TasksError::NoSuchTask { id: id.as_str().to_owned() })
     }
 
     fn update_task(
@@ -676,6 +1304,7 @@ impl TasksFacade for MockTasksFacade {
         &self,
         caller: &SessionSlot,
         id: &TaskId,
+        _version: u64,
     ) -> Result<RemovedTaskTree, TasksError> {
         self.deleted.lock().push((caller.clone(), id.clone()));
         self.delete_result
@@ -718,16 +1347,26 @@ mod prod_facade_tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: Some(Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
@@ -743,10 +1382,20 @@ mod prod_facade_tests {
             owner: owner.map(str::to_owned),
             parent: parent.map(str::to_owned),
             estimate: None,
+            kind: None,
+            cadence: None,
             rank: None,
             verify: None,
             reserved: None,
             links: Vec::new(),
+            // A claim the stub verifier accepts: the gate's own refusals
+            // have their own tests, and every other row here is about a
+            // different rule.
+            evidence: Some(EvidenceDraft {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+            }),
         }
     }
 
@@ -765,6 +1414,164 @@ mod prod_facade_tests {
             SessionSlot::lead("TestOrg", "myproj"),
             SessionSlot::worker("TestOrg", "myproj", "reviewer"),
         )
+    }
+
+    /// The descriptions say the user gate and the decision wait are the
+    /// lead's; both doors enforce it rather than only saying so.
+    #[test]
+    fn a_worker_cannot_mint_a_gate_or_raise_a_decision() {
+        let (_ws, facade, lead, worker) = fixture();
+        let refused = facade
+            .create_task(
+                &worker,
+                TaskDraft { verify: Some(Verify::User), ..draft("gated", None, None) },
+            )
+            .expect_err("a worker does not mint a user gate");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("only the project lead")),
+            "the refusal says whose door it is: {refused:?}",
+        );
+
+        let row = facade
+            .create_task(&lead, draft("plain", Some("reviewer"), None))
+            .expect("the lead creates the row");
+        let refused = facade
+            .update_task(
+                &worker,
+                &row.id,
+                TaskPatch { verify: Some(Verify::User), ..TaskPatch::default() },
+            )
+            .expect_err("an update is not the worker's way in either");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("only the project lead")),
+            "the update door says whose it is: {refused:?}",
+        );
+
+        let refused = facade
+            .wait_task(
+                &worker,
+                &row.id,
+                WaitingKind::User,
+                None,
+                None,
+                Some(decision_ask("Which way?", &["this", "that"])),
+                row.version,
+            )
+            .expect_err("a worker does not raise a decision on the user");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("only the project lead")),
+            "the wait door says whose it is: {refused:?}",
+        );
+    }
+
+    /// A decision draft with its options, as the wait door states one.
+    fn decision_ask(question: &str, options: &[&str]) -> AskDraft {
+        AskDraft {
+            kind: AskKind::Decision,
+            question: question.to_owned(),
+            options: options.iter().map(|option| (*option).to_owned()).collect(),
+            class: None,
+            due: None,
+            default: None,
+        }
+    }
+
+    /// The request record rides every bulk row it is on, so it is bounded
+    /// where it enters: a question one sentence, its options short phrases.
+    #[test]
+    fn a_decision_record_is_bounded_where_it_enters() {
+        let (_ws, facade, lead, _worker) = fixture();
+        let row = facade.create_task(&lead, draft("ask", None, None)).expect("create");
+        let version = row.version;
+        let long_question = "x".repeat(281);
+        let refused = facade
+            .wait_task(
+                &lead,
+                &row.id,
+                WaitingKind::User,
+                None,
+                None,
+                Some(decision_ask(&long_question, &["this"])),
+                version,
+            )
+            .expect_err("an over-long question is refused");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("280")),
+            "the refusal names the bound: {refused:?}",
+        );
+        let long_option = "o".repeat(121);
+        let refused = facade
+            .wait_task(
+                &lead,
+                &row.id,
+                WaitingKind::User,
+                None,
+                None,
+                Some(decision_ask("Which way?", &[long_option.as_str()])),
+                version,
+            )
+            .expect_err("an over-long option is refused");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("120")),
+            "the refusal names the option bound: {refused:?}",
+        );
+        let refused = facade
+            .wait_task(
+                &lead,
+                &row.id,
+                WaitingKind::User,
+                None,
+                None,
+                Some(decision_ask("  ", &["this"])),
+                version,
+            )
+            .expect_err("a decision with no question is refused");
+        assert!(matches!(&refused, TasksError::Refused(_)));
+        // A decision enumerates options: a free-text question is a
+        // clarification, and the door says so.
+        let refused = facade
+            .wait_task(
+                &lead,
+                &row.id,
+                WaitingKind::User,
+                None,
+                None,
+                Some(decision_ask("Which way?", &[])),
+                version,
+            )
+            .expect_err("a decision with no options is refused");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("clarification")),
+            "the refusal points at the right kind: {refused:?}",
+        );
+    }
+
+    /// A row minted straight into `completed` with a user gate parks on
+    /// the look like any other completion: creation is not a way around
+    /// the park either.
+    #[test]
+    fn a_created_completed_row_with_a_user_gate_parks_on_the_look() {
+        let (_ws, facade, lead, _worker) = fixture();
+        let task = facade
+            .create_task(
+                &lead,
+                TaskDraft {
+                    status: Some(TaskStatus::Completed),
+                    verify: Some(Verify::User),
+                    ..draft("finished, and owed a look", None, None)
+                },
+            )
+            .expect("the stub evidence checks out");
+        assert_eq!(task.status, TaskStatus::Waiting, "the look park is where the completion lands");
+        assert!(
+            task.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "and it waits on the look: {:?}",
+            task.waiting_on,
+        );
+        assert!(
+            task.evidence.as_ref().is_some_and(|e| e.verified_at.is_some()),
+            "with checked evidence"
+        );
     }
 
     #[test]
@@ -790,18 +1597,18 @@ mod prod_facade_tests {
         facade.create_task(&lead, draft("unclaimed", None, None)).expect("sibling");
 
         assert_eq!(
-            facade.list_tasks(&lead, None, None, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None, None).len(),
             3,
             "unfiltered is the whole project"
         );
-        let by_owner = facade.list_tasks(&lead, Some("reviewer"), None, None, None);
+        let by_owner = facade.list_tasks(&lead, Some("reviewer"), None, None, None, None);
         assert_eq!(by_owner.len(), 1, "owner narrows to that label");
         assert_eq!(by_owner[0].task.subject, "mine");
-        let by_parent = facade.list_tasks(&lead, None, Some(&epic.id), None, None);
+        let by_parent = facade.list_tasks(&lead, None, Some(&epic.id), None, None, None);
         assert_eq!(by_parent.len(), 1, "parent narrows to that task's children");
         assert_eq!(by_parent[0].task.subject, "mine");
         assert_eq!(
-            facade.list_tasks(&worker, Some("reviewer"), None, None, None).len(),
+            facade.list_tasks(&worker, Some("reviewer"), None, None, None, None).len(),
             1,
             "a worker's list is the same project's set",
         );
@@ -818,13 +1625,13 @@ mod prod_facade_tests {
             .create_task(&lead, draft("orphan", None, Some("ghost")))
             .expect("a child pointing at a parent that never existed");
         assert_eq!(
-            facade.delete_task(&lead, &TaskId::from("ghost")),
+            facade.delete_task(&lead, &TaskId::from("ghost"), 0),
             Err(TasksError::NoSuchTask { id: "ghost".to_owned() }),
             "an id that was never there is not a successful delete, even with orphans pointing \
              at it",
         );
         assert_eq!(
-            facade.list_tasks(&lead, None, None, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None, None).len(),
             1,
             "the orphan is not collected under a name nothing owns",
         );
@@ -854,7 +1661,7 @@ mod prod_facade_tests {
             "the update names the project that owns the row",
         );
         assert_eq!(
-            facade.delete_task(&lead, &TaskId::from("other-1")),
+            facade.delete_task(&lead, &TaskId::from("other-1"), 0),
             Err(TasksError::TaskInAnotherProject {
                 id: "other-1".to_owned(),
                 project: "otherproj".to_owned(),
@@ -888,7 +1695,7 @@ mod prod_facade_tests {
                 "{stated} names no row in this project",
             );
             assert_eq!(
-                facade.delete_task(&lead, &TaskId::from(stated)),
+                facade.delete_task(&lead, &TaskId::from(stated), 0),
                 Err(TasksError::NoSuchTask { id: stated.to_owned() }),
                 "{stated} names no row in this project",
             );
@@ -913,17 +1720,20 @@ mod prod_facade_tests {
             project: "otherproj".to_owned(),
         };
         assert_eq!(
-            facade.claim_task(&lead, Some("other-1"), None),
+            facade.claim_task(&lead, "other-1", 0),
             Err(foreign()),
             "a claim naming another project's row says which project holds it",
         );
         assert_eq!(
-            facade.claim_task(&lead, None, Some("other-1")),
-            Err(foreign()),
-            "an epic naming another project's row says the same",
-        );
-        assert_eq!(
-            facade.wait_task(&lead, &TaskId::from("other-1"), WaitingKind::Resource, None, None),
+            facade.wait_task(
+                &lead,
+                &TaskId::from("other-1"),
+                WaitingKind::Resource,
+                None,
+                None,
+                None,
+                0,
+            ),
             Err(foreign()),
             "the row a wait names is another project's",
         );
@@ -934,22 +1744,32 @@ mod prod_facade_tests {
                 WaitingKind::Dependency,
                 None,
                 Some(&TaskId::from("other-1")),
+                None,
+                0,
             ),
             Err(foreign()),
             "the blocker a wait names is another project's",
         );
 
         assert_eq!(
-            facade.claim_task(&lead, Some("other"), None),
+            facade.claim_task(&lead, "other", 0),
             Err(TasksError::NoSuchTask { id: "other".to_owned() }),
             "a prefix of another project's id names no row here",
         );
         assert_eq!(
-            facade.claim_task(&lead, Some("nope"), None),
+            facade.claim_task(&lead, "nope", 0),
             Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
         );
         assert_eq!(
-            facade.wait_task(&lead, &TaskId::from("nope"), WaitingKind::Resource, None, None),
+            facade.wait_task(
+                &lead,
+                &TaskId::from("nope"),
+                WaitingKind::Resource,
+                None,
+                None,
+                None,
+                0,
+            ),
             Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
             "a missing row is absent, not another project's",
         );
@@ -960,6 +1780,8 @@ mod prod_facade_tests {
                 WaitingKind::Dependency,
                 None,
                 Some(&TaskId::from("nope")),
+                None,
+                0,
             ),
             Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
             "a missing blocker is absent, not another project's",
@@ -983,11 +1805,15 @@ mod prod_facade_tests {
         let mut waiting = seeded_task("waiting", "a deferral");
         waiting.status = TaskStatus::Waiting;
         waiting.waiting_on = Some(forge_primitives::tasks::Waiting {
-            kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+            kind: Some(forge_primitives::tasks::WaitingKind::User),
             detail: None,
             on: None,
             verification: false,
             parked: false,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(waiting);
@@ -1150,8 +1976,9 @@ mod prod_facade_tests {
             )
             .expect("b is there to move");
 
-        let removed =
-            facade.delete_task(&lead, &c.id).expect("the task the call named is there to remove");
+        let removed = facade
+            .delete_task(&lead, &c.id, 0)
+            .expect("the task the call named is there to remove");
 
         assert_eq!(
             removed.task.id, c.id,
@@ -1160,7 +1987,7 @@ mod prod_facade_tests {
         assert_eq!(removed.task.subject, "c", "as it stood just before removal");
         assert_eq!(removed.descendants_removed, 2, "b and d went with it, and the count says so");
         assert_eq!(
-            facade.list_tasks(&lead, None, None, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None, None).len(),
             1,
             "only the sibling survives"
         );
@@ -1175,7 +2002,7 @@ mod prod_facade_tests {
         ws.seed_test_task(seeded_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail"));
         ws.seed_test_task(seeded_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests"));
 
-        let said = match facade.delete_task(&lead, &TaskId::from("7ed0")) {
+        let said = match facade.delete_task(&lead, &TaskId::from("7ed0"), 0) {
             Err(TasksError::Refused(said)) => said,
             other => panic!("a refusal naming the rows it matched, got {other:?}"),
         };
@@ -1186,12 +2013,12 @@ mod prod_facade_tests {
         );
 
         let removed = facade
-            .delete_task(&lead, &TaskId::from("7ed0bb"))
+            .delete_task(&lead, &TaskId::from("7ed0bb"), 0)
             .expect("one row carries that prefix");
         assert_eq!(removed.task.id, TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"));
         assert_eq!(removed.task.subject, "add tests", "the prefix removed its own row");
         assert_eq!(
-            facade.list_tasks(&lead, None, None, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None, None).len(),
             1,
             "and left the other row alone",
         );
@@ -1223,25 +2050,46 @@ mod prod_facade_tests {
             )
             .expect("the completion lands on the look");
 
-        let said = match facade.delete_task(&lead, &gated.id) {
+        let version = facade.get_task(&lead, &gated.id).expect("the gated row").task.version;
+        let said = match facade.delete_task(&lead, &gated.id, version) {
             Err(TasksError::Refused(said)) => said,
             other => panic!("a refusal naming the row, got {other:?}"),
         };
         assert!(said.contains("gated"), "the refusal names the row: {said}");
         assert_eq!(
-            facade.list_tasks(&lead, None, None, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None, None).len(),
             1,
             "and the row is still there to be looked at",
         );
     }
 
+    /// Minting a row straight into `completed` is a completion claim too,
+    /// so it goes through the same gate rather than around it.
+    #[test]
+    fn a_row_created_completed_is_gated_like_a_move() {
+        let (_ws, facade, lead, _worker) = fixture();
+        let refused = facade
+            .create_task(
+                &lead,
+                TaskDraft {
+                    status: Some(TaskStatus::Completed),
+                    evidence: None,
+                    ..draft("a finished row", Some("lead"), None)
+                },
+            )
+            .expect_err("a completion with no evidence is refused");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("evidence")),
+            "the refusal names the claim: {refused:?}",
+        );
+    }
+
     /// A parent is an id too, and the store holds the row it names: a
     /// child created - or re-parented - under a short form is the epic's
-    /// child for every literal comparison the board makes, the claim by
-    /// epic included.
+    /// child for every literal comparison the board makes.
     #[test]
     fn a_stated_parent_is_stored_as_the_row_it_names() {
-        let (ws, facade, lead, worker) = fixture();
+        let (ws, facade, lead, _worker) = fixture();
         let epic = "7ed0aaaa-0000-4000-8000-000000000001";
         ws.seed_test_task(seeded_task(epic, "the epic"));
 
@@ -1252,11 +2100,6 @@ mod prod_facade_tests {
             Some(TaskId::from(epic)),
             "the store holds the row the stated prefix named",
         );
-
-        let claimed = facade
-            .claim_task(&worker, None, Some("7ed0aaaa"))
-            .expect("the epic's own prefix pulls the child it now holds");
-        assert_eq!(claimed.id, child.id);
 
         let moved = facade
             .update_task(
@@ -1303,7 +2146,8 @@ mod prod_facade_tests {
         facade.create_task(&lead, draft("child", None, Some(epic))).expect("child");
         facade.create_task(&lead, draft("sibling", None, None)).expect("sibling");
 
-        let kids = facade.list_tasks(&lead, None, Some(&TaskId::from("7ed0aaaa")), None, None);
+        let kids =
+            facade.list_tasks(&lead, None, Some(&TaskId::from("7ed0aaaa")), None, None, None);
         assert_eq!(kids.len(), 1, "the prefix names the parent row: {kids:?}");
         assert_eq!(kids[0].task.subject, "child");
     }
@@ -1319,9 +2163,14 @@ mod prod_facade_tests {
         let (_ws, facade, lead, worker) = fixture();
         let task = facade
             .create_task(
-                &worker,
+                &lead,
                 TaskDraft {
                     verify: Some(forge_primitives::tasks::Verify::User),
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        excerpt: None,
+                    }),
                     ..draft("the parked row", Some("reviewer"), Some("epic"))
                 },
             )
@@ -1368,9 +2217,14 @@ mod prod_facade_tests {
         let (_ws, facade, lead, worker) = fixture();
         let task = facade
             .create_task(
-                &worker,
+                &lead,
                 TaskDraft {
                     verify: Some(forge_primitives::tasks::Verify::User),
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        excerpt: None,
+                    }),
                     ..draft("the parked row", Some("reviewer"), Some("epic"))
                 },
             )
@@ -1420,10 +2274,10 @@ mod prod_facade_tests {
     /// the row keeps its gate - so the two-call path has no first step.
     #[test]
     fn a_clear_of_a_user_verify_is_refused_by_name() {
-        let (ws, facade, lead, worker) = fixture();
+        let (ws, facade, lead, _worker) = fixture();
         let task = facade
             .create_task(
-                &worker,
+                &lead,
                 TaskDraft {
                     verify: Some(forge_primitives::tasks::Verify::User),
                     ..draft("the gated row", Some("reviewer"), Some("epic"))
@@ -1506,7 +2360,7 @@ mod prod_facade_tests {
         ws.seed_test_task(held);
         ws.seed_test_task(seeded_task("t-2", "free"));
 
-        let ready = facade.list_tasks(&lead, None, None, None, Some(true));
+        let ready = facade.list_tasks(&lead, None, None, None, None, Some(true));
         assert_eq!(ready.len(), 1, "only the free row is ready: {ready:?}");
         assert_eq!(ready[0].task.id, TaskId::from("t-2"));
         assert!(ready[0].marks.ready, "and it carries the mark it was filtered by");

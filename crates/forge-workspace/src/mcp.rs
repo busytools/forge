@@ -463,34 +463,36 @@ pub fn build_forge_server(
 pub(crate) const TASK_BOARD_INSTRUCTIONS: &str = "\
 forge's task board is the shared surface for work in flight. It is for running \
 work: a landed row with no children and no epic above it is deleted in the same \
-pass, never left completed; a landed child of an epic - open or already terminal \
-- is completed and left terminal so the epic can read `to close` (a verify=user \
-child parks in waiting on the user first). Read it \
-with tasks__list: a `ready` mark means a row can be started, `worked` and \
-`overdue` say how long it has run against its estimate, and an over-estimate \
-message is an answer you owe. Claim an unassigned row \
-before working: tasks__claim by `id`, or by `epic` to pull that epic's top \
-ready row; one row in progress per worker. Keep your row true: tasks__update on every \
-state change - the update is also your alive signal - and attach the PR \
-the moment it exists. If you cannot proceed, tasks__wait: `kind` is \
-decision (a question for the user, minted only by the lead - a hold they \
+pass, never left completed; a landed \
+child of an epic - open or already terminal - is completed and left terminal so \
+the epic can read `to close` (a verify=user child parks in waiting on the user \
+first). Read it \
+with tasks__list; tasks__get reads one row whole. Claim an unassigned row \
+before working; one row in progress per worker. \
+Keep your row true: tasks__update on every \
+state change - the update is your alive signal, and every write names its \
+version - and attach the PR at once. If you cannot proceed, tasks__wait: `kind` is \
+user (a question for the user, minted only by the lead - a hold they \
 asked for, something ambiguous after the decision model, peers and your \
 own review, or a look they should give when they return), dependency \
 (another task - put its id \
-in `on`) or resource (an account, a CI run, a machine); then move to your \
-next held row, not sit still. A lead who can continue but wants \
-the person's look raises the same wait - prose is not a surface. File what \
+in `on`) or resource (an account, CI or a machine); a user ask's `ask` \
+is decision, clarification, exception or teaching. Acknowledge and snooze \
+are the person's acts: no tool writes \
+either. Then move on. A lead who can continue but wants \
+the person's look raises the same wait - prose is not a surface. **Urgency \
+picks the channel**: an ask needed now goes to the person directly; anything \
+else is a wait here - a row waiting on the person is blocked on them. File what \
 you find mid-flight at \
-once with tasks__create, under your epic, owned or unowned, except a \
+once with tasks__create, under your epic, except a \
 defect in a cut under review, which the lead fixes in line rather than \
-filing; nothing else is deferred. A row with verify=user cannot complete until the user approves \
-it, and that gate is minted on the row - never inherited from an epic, \
-whose own gate governs only its own completion; a look the user already \
-gave in chat is completed by the lead with tasks__approve and the approval \
+filing; nothing else is deferred. A verify=user row cannot complete until the user approves \
+it, and that gate is minted on the row - never inherited from an epic, whose \
+own gate governs only its own completion; a look the user gave in chat is \
+completed by the lead with tasks__approve and the approval \
 quoted (never a decision, which is the user's to answer); completing the \
 ROOT row of an epic closes it and archives the tree. \
-The chase asks an over-estimate owner once and escalates to the lead once \
-- answer with an update, not silence.";
+The chase asks an over-estimate owner once; answer with an update.";
 
 #[cfg(test)]
 mod tests {
@@ -560,7 +562,7 @@ mod tests {
     }
 
     /// The board contract is where a session first learns that
-    /// `kind: decision` routes to the user, so the test for parking there
+    /// `kind: user` routes to the person, so the test for parking there
     /// rides the same line: without it the contract teaches the route and
     /// leaves out when taking it is right.
     #[test]
@@ -570,12 +572,12 @@ mod tests {
                 "a hold they asked for, something ambiguous after the decision model, peers and \
                  your own review, or a look they should give when they return"
             ),
-            "the parking test rides the kind: decision clause, channels and bar together",
+            "the parking test rides the kind: user clause, channels and bar together",
         );
         assert!(
             TASK_BOARD_INSTRUCTIONS
-                .contains("decision (a question for the user, minted only by the lead"),
-            "the decision wait is the lead's to mint: {TASK_BOARD_INSTRUCTIONS}",
+                .contains("user (a question for the user, minted only by the lead"),
+            "the user wait is the lead's to mint: {TASK_BOARD_INSTRUCTIONS}",
         );
         assert!(
             TASK_BOARD_INSTRUCTIONS.contains(
@@ -583,6 +585,24 @@ mod tests {
                  prose is not a surface"
             ),
             "the at-convenience channel rides the same rule: {TASK_BOARD_INSTRUCTIONS}",
+        );
+    }
+
+    /// The person's own acts stay the person's: a session that read only
+    /// this block would otherwise reach for an ack or a snooze it has no
+    /// verb for, and a teaching's policy note would be a thing nobody knew
+    /// the board kept.
+    #[test]
+    fn the_task_instructions_keep_acknowledge_and_snooze_the_persons() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS
+                .contains("Acknowledge and snooze are the person's acts: no tool writes either"),
+            "the ack and snooze rule is not in the always-on block: {TASK_BOARD_INSTRUCTIONS}",
+        );
+        assert!(
+            TASK_BOARD_INSTRUCTIONS
+                .contains("a user ask's `ask` is decision, clarification, exception or teaching"),
+            "the four ask kinds are not named: {TASK_BOARD_INSTRUCTIONS}",
         );
     }
 
@@ -651,7 +671,7 @@ mod tests {
 
     /// The claim is scoped to unassigned rows (#2416): a lead assigns a
     /// worker's row at creation, and a worker reading only this block
-    /// would otherwise pull a different row with `claim` by epic.
+    /// would otherwise claim another row than the one it was given.
     #[test]
     fn the_task_instructions_claim_only_an_unassigned_row() {
         assert!(

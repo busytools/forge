@@ -583,15 +583,7 @@ pub(crate) fn live_state_sections(
         ));
     }
 
-    let open: Vec<&Task> = board
-        .iter()
-        .filter(|task| {
-            matches!(
-                task.status,
-                TaskStatus::Pending | TaskStatus::InProgress | TaskStatus::Waiting
-            )
-        })
-        .collect();
+    let open: Vec<&Task> = board.iter().filter(|task| !task.status.is_terminal()).collect();
     let rows = if live.is_some_and(|live| live.board_unreadable) {
         vec![
             "not read - this run could not load the durable board; the rows on disk are \
@@ -640,7 +632,7 @@ fn board_door(task: &Task, seat: &SessionSlot) -> &'static str {
         };
     }
     if task.owner.is_none() {
-        return if task.status == TaskStatus::Pending && task.waiting_on.is_none() {
+        return if task.is_ready() {
             "claim with `tasks__claim`"
         } else {
             "nobody holds it - take it with `tasks__update`"
@@ -652,9 +644,14 @@ fn board_door(task: &Task, seat: &SessionSlot) -> &'static str {
 /// What a waiting row of the successor's own waits on, so its line names the
 /// block rather than reading as work to continue.
 fn waiting_door(task: &Task) -> &'static str {
-    use forge_primitives::tasks::WaitingKind;
+    use forge_primitives::tasks::{AskKind, WaitingKind};
     match task.waiting_on.as_ref().and_then(|waiting| waiting.kind) {
-        Some(WaitingKind::Decision) => "yours - waiting on the user's decision",
+        Some(WaitingKind::User) => match task.request.as_ref().map(|request| request.kind) {
+            Some(AskKind::Clarification) => "yours - waiting on the user's answer",
+            Some(AskKind::Exception) => "yours - waiting on the user's disposition",
+            Some(AskKind::Teaching) => "yours - waiting on the user's lesson",
+            Some(AskKind::Decision) | None => "yours - waiting on the user's decision",
+        },
         Some(WaitingKind::Dependency) => "yours - waiting on its dependency",
         Some(WaitingKind::Resource) => "yours - waiting on a resource",
         None => "yours - waiting; the kind is unstated",
@@ -2014,10 +2011,13 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::InProgress,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
@@ -2028,11 +2028,13 @@ mod tests {
                     label: None,
                     target: target.to_owned(),
                     state: None,
+                    last_check: None,
                     added_at: SystemTime::UNIX_EPOCH,
                 })
                 .into_iter()
                 .collect(),
-            attempt: 0,
+            evidence: None,
+            version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
@@ -2490,11 +2492,15 @@ mod tests {
         let mut waiting = task("the blocked row", Some(mine.clone()), None);
         waiting.status = TaskStatus::Waiting;
         waiting.waiting_on = Some(forge_primitives::tasks::Waiting {
-            kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+            kind: Some(forge_primitives::tasks::WaitingKind::User),
             detail: None,
             on: None,
             verification: false,
             parked: false,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         let mut reserved = task("the reserved row", None, None);

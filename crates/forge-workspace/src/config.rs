@@ -643,11 +643,26 @@ struct SlackBinding {
     workspace: String,
 }
 
+/// The outward connector a project may opt into: the only external lookup
+/// the board ever makes, and never by default. A project that names none
+/// is self-contained - nothing asks for a PR and no network call is made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorKind {
+    /// Pull requests and their CI verdicts, read through `gh` from the
+    /// project's own repository.
+    Github,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectEntry {
     name: String,
     path: String,
+    /// The project's outward connector. Absent keeps the board
+    /// self-contained.
+    #[serde(default)]
+    connector: Option<ConnectorKind>,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
     /// `CLAUDE_CODE_SUBAGENT_MODEL`). Required to be declared by at
@@ -705,6 +720,7 @@ impl std::fmt::Debug for ProjectEntry {
         f.debug_struct("ProjectEntry")
             .field("name", &self.name)
             .field("path", &self.path)
+            .field("connector", &self.connector)
             .field("model", &self.model)
             .field("permission_mode", &self.permission_mode)
             .field("max_workers", &self.max_workers)
@@ -1096,6 +1112,9 @@ pub const DEFAULT_GATEWAY_PORT: u16 = 8787;
 pub(crate) struct LoadedProject {
     pub name: String,
     pub path: PathBuf,
+    /// The project's outward connector, if it opted into one. `None` keeps
+    /// the board self-contained: no PR is asked for, nothing is fetched.
+    pub connector: Option<ConnectorKind>,
     /// Original path string from `forge.toml`, preserved for display
     /// (e.g. `~/Projects/forge` with `~` un-expanded). Use `path` for
     /// filesystem access; this for human-readable output.
@@ -1161,6 +1180,7 @@ impl std::fmt::Debug for LoadedProject {
         f.debug_struct("LoadedProject")
             .field("name", &self.name)
             .field("path", &self.path)
+            .field("connector", &self.connector)
             .field("display_path", &self.display_path)
             .field("org", &self.org)
             .field("accounts", &self.accounts)
@@ -1756,6 +1776,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
             projects.push(LoadedProject {
                 name: project_entry.name.clone(),
                 path: expand_home(&project_entry.path),
+                connector: project_entry.connector,
                 display_path: project_entry.path,
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
@@ -2077,6 +2098,33 @@ token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#
+    }
+
+    /// A project opts into the GitHub connector by name, and only by a
+    /// name forge knows: absent by default, and a typo fails the load
+    /// rather than leaving the board self-contained under a key the person
+    /// thought was on.
+    #[test]
+    fn a_project_connector_is_opt_in_and_named() {
+        let opted_in = minimal_config().replace(
+            "name = \"forge\"\npath = \"~/Projects/forge\"",
+            "name = \"forge\"\npath = \"~/Projects/forge\"\nconnector = \"github\"",
+        );
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &opted_in);
+        let config = load_from_dir(dir.path()).expect("the connector key loads");
+        assert_eq!(named(&config, "forge").connector, Some(ConnectorKind::Github));
+
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("loads without the key");
+        assert_eq!(named(&config, "forge").connector, None, "the default is no connector");
+
+        let dir = tempdir().expect("tempdir");
+        let typo = opted_in.replace("\"github\"", "\"githubx\"");
+        write_config(dir.path(), &typo);
+        let err = load_from_dir(dir.path()).expect_err("an unknown connector is refused");
+        assert!(err.to_string().contains("githubx"), "the refusal names the typo: {err}");
     }
 
     /// One logged event: its level and the `event_name` it carries. A

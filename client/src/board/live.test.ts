@@ -229,6 +229,45 @@ describe('the board over a connection', () => {
     stop();
   });
 
+  /**
+   * **A drawer's own ask is applied where it lands.** The frame carries one
+   * row whole - its brief and its history - so the drawer opens from the
+   * frame rather than from a whole board read (rule 32).
+   */
+  it('applies a task_detail frame into the drawn board without a read', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe((next) => seen.push(next));
+    forge.stores.get(BOARD)?.set(boardWire(), 1);
+    forge.arrive({
+      kind: 'update',
+      update: {
+        task_detail: {
+          key: LEAD,
+          project: 'proj',
+          row: {
+            task: {
+              id: 't-detail',
+              project_name: 'proj',
+              subject: 'a row',
+              status: 'pending',
+              detail: 'the brief',
+            },
+            history: [],
+            history_total: 0,
+          },
+        },
+      },
+    } as unknown as ServerMessage);
+    const rows = (
+      seen.at(-1)?.wire as { projects: { rows: { task: { id: string; detail: string } }[] }[] }
+    ).projects[0]?.rows;
+    expect(rows?.map((row) => row.task.id)).toEqual(['t-detail']);
+    expect(rows?.[0]?.task.detail, "the drawer's brief did not land").toBe('the brief');
+    expect(forge.refreshed, "a drawer's ask bought a whole board read").toEqual([]);
+    stop();
+  });
+
   it('asks for nothing on a seat-liveness variant', () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});

@@ -7,18 +7,53 @@
 
 use std::time::SystemTime;
 
-use forge_workspace::board::{BoardRow, FleetRow};
+use forge_workspace::board::{BoardDelta, BoardRow, FleetRow};
 
 use crate::surface::ViewSurface;
 
 impl ViewSurface {
     /// `project`'s live rows, with their derived facts.
+    ///
+    /// Terminal rows are not here: a finished row is history, and the bulk
+    /// board is work in play. They leave the moment they end, and the
+    /// closed view is [`ViewSurface::archived_rows`].
     pub fn board_rows(&self, project: &str) -> Vec<BoardRow> {
-        self.workspace.board_rows(
-            project,
-            SystemTime::now(),
-            forge_workspace::board::DEFAULT_STALE_SECS,
-        )
+        self.workspace
+            .board_rows(project, SystemTime::now(), forge_workspace::board::DEFAULT_STALE_SECS)
+            .into_iter()
+            .filter(|row| !row.task.status.is_terminal())
+            .collect()
+    }
+
+    /// `project`'s closed rows: the terminal rows still in the live set,
+    /// then the archive. One read, because the toggle that opens it wants
+    /// everything that has ended rather than the storage boundary between
+    /// them; a restored row is still terminal and stays here, where the
+    /// reopen door can reach it.
+    ///
+    /// **A failed archive read is not an empty archive**: the caller draws
+    /// the refusal rather than a shelf that reads as "nothing has ended".
+    pub fn archived_rows(
+        &self,
+        project: &str,
+    ) -> Result<Vec<forge_primitives::tasks::Task>, String> {
+        let mut rows: Vec<_> = self
+            .workspace
+            .tasks_for_project(project)
+            .into_iter()
+            .filter(|task| task.status.is_terminal())
+            .collect();
+        rows.extend(self.workspace.archived_tasks_for_project_checked(project)?);
+        Ok(rows)
+    }
+
+    /// The window's attention facts for `project`: when its board was last
+    /// looked at (server-side, so every client agrees), and what changed
+    /// since.
+    pub fn board_attention(&self, project: &str) -> (Option<SystemTime>, BoardDelta) {
+        let last = self.workspace.last_board_seen(project);
+        let delta = self.workspace.board_delta(project, last);
+        (last, delta)
     }
 
     /// One row per project, for the fleet page.
@@ -45,16 +80,20 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: None,
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -65,7 +104,11 @@ mod tests {
     /// the workspace's own answer, or that forgets the project scoping.
     #[test]
     fn the_board_verbs_forward_the_workspaces_own_answer() {
+        let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, _updates) = Workspace::testing_stub();
+        workspace.install_db_for_test(
+            forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
         workspace.seed_test_project("forge", "/tmp/forge-surface-board");
         workspace.seed_test_task(sample_task("t-1", "forge"));
         let surface = ViewSurface::new(Arc::clone(&workspace));
@@ -75,9 +118,31 @@ mod tests {
         assert!(rows[0].marks.ready, "a pending unowned row is ready");
         assert!(surface.board_rows("other").is_empty(), "and another project sees none");
 
+        // A terminal row leaves the bulk board at once and is reachable
+        // through the closed read instead.
+        workspace
+            .seed_test_task(Task { status: TaskStatus::Completed, ..sample_task("t-2", "forge") });
+        assert_eq!(surface.board_rows("forge").len(), 1, "a finished row is not live work");
+        let closed = surface.archived_rows("forge").expect("the closed read");
+        assert_eq!(closed.len(), 1, "the closed read carries it: {closed:?}");
+        assert_eq!(closed[0].id, TaskId::from("t-2"));
+        assert!(closed[0].archived_at.is_none(), "it is closed, not archived yet");
+
         let fleet = surface.fleet();
         let row = fleet.iter().find(|row| row.project == "forge").expect("the project's row");
         assert_eq!(row.queue, 1, "the ready unowned row is the queue");
         let _ = SessionSlot::lead("TestOrg", "forge");
+    }
+
+    /// **A failed archive read is not an empty archive**: the shelf refuses
+    /// rather than drawing "nothing has ended" over a store it could not
+    /// read.
+    #[test]
+    fn an_unreadable_archive_is_refused_not_empty() {
+        let (workspace, _updates) = Workspace::testing_stub();
+        workspace.seed_test_project("forge", "/tmp/forge-surface-archive");
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let refused = surface.archived_rows("forge");
+        assert!(refused.is_err(), "a missing store answered as an empty shelf: {refused:?}");
     }
 }

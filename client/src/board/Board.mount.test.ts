@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { boardWire, homeWire } from '../dev/fixture.data';
 import { violationsOf } from '../testing/axe';
-import type { BoardWire } from '../wire/board';
+import type { AttentionWire, BoardWire } from '../wire/board';
 import type { BoardRow, HomeWire, Marks, Task, TaskLinkWire, TaskStatus } from '../wire/home';
 import Board from './Board.svelte';
 import Frames from './testing/Frames.svelte';
@@ -35,8 +35,6 @@ function marks(over: Partial<Marks> = {}): Marks {
     ready: false,
     in_review: false,
     overdue: false,
-    no_movement: false,
-    waiting_too_long: false,
     stale: false,
     to_close: false,
     ...over,
@@ -51,14 +49,18 @@ function task(id: string, subject: string, status: TaskStatus, over: Partial<Tas
     active_form: null,
     detail: null,
     status,
+    kind: 'finite',
     owner: null,
     parent: null,
     waiting_on: null,
+    request: null,
     estimate: null,
+    cadence: null,
     rank: null,
     verify: null,
     links: [],
-    attempt: 0,
+    evidence: null,
+    version: 0,
     archived_at: null,
     created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
@@ -71,6 +73,8 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     task,
     worked_secs: 0,
     updated_secs_ago: 0,
+    owner_live: true,
+    wait_secs: null,
     marks: marks(),
     rollup: null,
     parent_subject: null,
@@ -98,6 +102,9 @@ function summon(
       board: { wire: wires.board, refused: null },
       org: 'TestOrg',
       project: 'proj',
+      // This suite drives the FULL board's own interactions; the window is
+      // the app's front door and has its own tests.
+      initialMode: 'board' as const,
       onact,
     },
   });
@@ -111,13 +118,47 @@ const byText = (text: string): HTMLElement | null => {
   return found ?? null;
 };
 
+/**
+ * The archived shelf's own surface: the board page over the frame harness,
+ * then the `archived` toggle, whose one read answers `rows`. Finished work
+ * left the bulk board, so this is where a terminal row is drawn - and where
+ * its subject's door opens the row page.
+ */
+async function summonArchive(rows: Task[]): Promise<{
+  set: (next: { home: HomeWire; board: BoardWire }) => void;
+}> {
+  const first = boardWire.projects[0];
+  if (first === undefined) throw new Error('the fixture holds no project');
+  const frame = mount(Frames, {
+    target: document.body,
+    props: {
+      initial: { home: homeWire, board: { ...boardWire, projects: [{ ...first, rows: [] }] } },
+      mode: 'archived' as const,
+      onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+      onarchived: () =>
+        Promise.resolve({
+          wire: { projects: [{ project: first.project, rows }] },
+          refused: null,
+        }),
+    },
+  }) as unknown as { set: (next: { home: HomeWire; board: BoardWire }) => void };
+  flushSync();
+  byText('archived')?.click();
+  await vi.waitFor(() => {
+    if (document.querySelector('.w-exc') === null) throw new Error('the archive has not landed');
+  });
+  flushSync();
+  app = frame;
+  return frame;
+}
+
 describe("the board's controls", () => {
   it('hands approve, send-back and answer out as commands with their project', () => {
     const waiting = (id: string, verification: boolean) =>
       row(
         task(id, `subject ${id}`, 'waiting', {
           verify: verification ? 'user' : null,
-          waiting_on: { kind: 'decision', detail: 'the words', on: null, verification },
+          waiting_on: { kind: 'user', detail: 'the words', on: null, verification },
         }),
       );
     summon(wireWith([waiting('v1', true), waiting('q1', false)]));
@@ -155,7 +196,34 @@ describe("the board's controls", () => {
     byText('answer')?.click();
     flushSync();
     expect(acts[2]).toEqual({
-      task_answer: { project: 'proj', id: 'q1', words: 'keep the window raise' },
+      task_answer: { project: 'proj', id: 'q1', text: 'keep the window raise' },
+    });
+  });
+
+  it('answers an ask from the full board by its kind, never by words alone', () => {
+    // The strip drew one words-only door for every ask, which the core
+    // refuses: each kind now gets its own door, and an exception answers
+    // with the disposition it was given.
+    summon(
+      wireWith([
+        row(
+          task('x1', 'a fault', 'waiting', {
+            request: {
+              kind: 'exception',
+              question: 'The flake is back: what now?',
+              options: [],
+              class: null,
+              answer: null,
+            },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: false },
+          }),
+        ),
+      ]),
+    );
+    byText('retry')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'x1', disposition: 'retry' },
     });
   });
 
@@ -241,17 +309,22 @@ describe("the board's controls", () => {
   });
 
   /** Every state draws, one class per status - shape and colour both. */
-  it('draws a mark per status', () => {
+  it('draws a mark for every LIVE status', () => {
     summon(
       wireWith(
-        (['pending', 'in_progress', 'waiting', 'completed', 'failed', 'canceled'] as const).map(
-          (status) => row(task(status, `a ${status} row`, status)),
+        (['pending', 'in_progress', 'waiting'] as const).map((status) =>
+          row(task(status, `a ${status} row`, status)),
         ),
       ),
     );
 
-    for (const cls of ['b-pend', 'b-run', 'b-wait', 'b-done', 'b-fail', 'b-cancel']) {
+    for (const cls of ['b-pend', 'b-run', 'b-wait']) {
       expect(document.querySelector(`.b-mark.${cls}`), `${cls} is drawn`).not.toBeNull();
+    }
+    // The finished states are not on this face: their rows left the bulk
+    // board, and the archived toggle draws them with the same marks.
+    for (const cls of ['b-done', 'b-fail', 'b-cancel']) {
+      expect(document.querySelector(`.b-mark.${cls}`), `${cls} should not be drawn`).toBeNull();
     }
   });
 
@@ -482,6 +555,7 @@ describe("the board's controls", () => {
         board: { wire: wires.board, refused: null },
         org: 'TestOrg',
         project: 'proj',
+        initialMode: 'board' as const,
         onact: () => {},
         notice: { severity: 'warning' as const, message: 'The board refused a move: nope' },
       },
@@ -506,6 +580,7 @@ describe("the board's controls", () => {
         board: { wire: wires.board, refused: null },
         org: 'TestOrg',
         project: 'proj',
+        initialMode: 'board' as const,
         onact: () => {},
         notice: {
           severity: 'error' as const,
@@ -619,7 +694,7 @@ describe("the board's controls", () => {
         row(
           task('epic', 'the epic', 'waiting', {
             verify: 'user',
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: true },
           }),
           { rollup: [2, 4] },
         ),
@@ -651,7 +726,7 @@ describe("the board's controls", () => {
           task('kid', 'a child', 'waiting', {
             parent: 'root',
             verify: 'user',
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: true },
           }),
           { rollup: [0, 1] },
         ),
@@ -690,7 +765,7 @@ describe("the board's controls", () => {
             detail: 'Which mock should ship?',
             verify: 'user',
             waiting_on: {
-              kind: 'decision',
+              kind: 'user',
               detail: null,
               on: null,
               verification: true,
@@ -743,7 +818,7 @@ describe("the board's controls", () => {
                 added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
               },
             ],
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: false },
           }),
         ),
       ]),
@@ -763,7 +838,7 @@ describe("the board's controls", () => {
         row(
           task('t1', 'a row', 'waiting', {
             verify: 'user',
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: true },
           }),
         ),
       ]),
@@ -1001,7 +1076,7 @@ describe("the row's own page", () => {
             detail: 'Which mock should ship?',
             verify: 'user',
             waiting_on: {
-              kind: 'decision',
+              kind: 'user',
               detail: null,
               on: null,
               verification: true,
@@ -1063,7 +1138,7 @@ describe("the row's own page", () => {
                 added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
               },
             ],
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: true },
           }),
         ),
       ]),
@@ -1089,22 +1164,68 @@ describe("the row's own page", () => {
    * approval in the drawer, and the drawer's reopen hands the user's own
    * strike back as one command (#2423/B).
    */
-  it('draws a lead-attested row and hands reopen out as a command', () => {
+  /** The bulk read carries the window's fields only; the drawer asks for the
+   *  rest once, and a second opening does not repeat the ask. */
+  it('asks for the row whole when the drawer opens, once', () => {
+    summon(wireWith([row(task('d1', 'a row', 'in_progress'))]));
+    const card = document.querySelector('.b-card[data-id="d1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    expect(acts[0]).toEqual({ task_detail: { project: 'proj', id: 'd1' } });
+    document.querySelector<HTMLElement>('.dr-x')?.click();
+    flushSync();
+    press(card);
+    expect(acts.filter((command) => 'task_detail' in command)).toHaveLength(1);
+  });
+
+  it('marks an attested row on the archived shelf and opens its page for the reopen', async () => {
     const attested = {
       evidence: 'Looks right - merge',
       at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     };
-    summon(wireWith([row(task('a1', 'an attested look', 'completed', { attested }))]));
-    expect(document.body.textContent, 'the card lost the mark').toContain('lead attested');
+    const ended = task('a1', 'an attested look', 'completed', { attested });
+    const frame = await summonArchive([ended]);
+    expect(document.body.textContent, 'the shelf lost the mark').toContain('lead attested');
 
-    const card = document.querySelector('.b-card[data-id="a1"]');
-    if (card === null) throw new Error('no card');
-    press(card);
+    const door = [...document.querySelectorAll<HTMLElement>('.w-exc button')].find(
+      (button) => button.textContent?.trim() === 'an attested look',
+    );
+    if (door === undefined) throw new Error('the archived row has no door');
+    door.click();
+    flushSync();
+    // The row left the bulk board when it ended, so the page's own read asks
+    // for it whole and the drawer draws from that answer.
+    expect(acts.at(-1)).toEqual({ task_detail: { project: 'proj', id: 'a1' } });
+    const first = boardWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    frame.set({
+      home: homeWire,
+      board: { ...boardWire, projects: [{ ...first, rows: [], detail: [row(ended)] }] },
+    });
+    flushSync();
     const drawer = document.querySelector('.dr');
-    expect(drawer?.textContent, 'the quote the lead recorded').toContain('Looks right - merge');
+    expect(drawer?.textContent, 'the row page did not draw the closed row').toContain(
+      'Looks right - merge',
+    );
     byText('reopen')?.click();
     flushSync();
-    expect(acts[0]).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
+    expect(acts.at(-1)).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
+
+    // A read the page applies without the drawer's set leaves the open id
+    // absent; the page asks again rather than drawing a blank page.
+    frame.set({ home: homeWire, board: { ...boardWire, projects: [{ ...first, rows: [] }] } });
+    flushSync();
+    expect(acts.at(-1), 'the absent row is asked again').toEqual({
+      task_detail: { project: 'proj', id: 'a1' },
+    });
+    frame.set({
+      home: homeWire,
+      board: { ...boardWire, projects: [{ ...first, rows: [], detail: [row(ended)] }] },
+    });
+    flushSync();
+    expect(document.querySelector('.dr')?.textContent, 'the page drew again').toContain(
+      'Looks right - merge',
+    );
   });
 
   /** The user reserves a pick from the row page, and the board says so. */
@@ -1115,7 +1236,7 @@ describe("the row's own page", () => {
     press(card);
     byText('reserve for you')?.click();
     flushSync();
-    expect(acts[0]).toEqual({ task_reserve: { project: 'proj', id: 'r1', reserved: true } });
+    expect(acts.at(-1)).toEqual({ task_reserve: { project: 'proj', id: 'r1', reserved: true } });
 
     // And a reserved row draws the mark, with the release door.
     summon(wireWith([row(task('r2', 'a reserved pick', 'pending', { reserved: 'user' }))]));
@@ -1125,7 +1246,7 @@ describe("the row's own page", () => {
     press(reserved);
     byText('release')?.click();
     flushSync();
-    expect(acts[1]).toEqual({ task_reserve: { project: 'proj', id: 'r2', reserved: false } });
+    expect(acts.at(-1)).toEqual({ task_reserve: { project: 'proj', id: 'r2', reserved: false } });
   });
 
   /**
@@ -1226,7 +1347,7 @@ describe("the row's own page", () => {
       wireWith([
         row(
           task('w1', 'needs you', 'waiting', {
-            waiting_on: { kind: 'decision', detail: 'the words', on: null, verification: false },
+            waiting_on: { kind: 'user', detail: 'the words', on: null, verification: false },
           }),
         ),
       ]),
@@ -1246,7 +1367,7 @@ describe("the row's own page", () => {
     button?.click();
     flushSync();
     expect(acts.at(-1)).toEqual({
-      task_answer: { project: 'proj', id: 'w1', words: 'keep the window raise' },
+      task_answer: { project: 'proj', id: 'w1', text: 'keep the window raise' },
     });
   });
 
@@ -1254,16 +1375,18 @@ describe("the row's own page", () => {
    * The done mark is the house's tick, not a coloured blob: the chat draws a
    * settled turn the same way, and one glyph per meaning is the point.
    */
-  it("draws the house's tick for a completed row", () => {
-    summon(wireWith([row(task('c1', 'shipped', 'completed'))]));
+  it("draws the house's tick for a completed row on the archived shelf", async () => {
+    await summonArchive([task('c1', 'shipped', 'completed')]);
     expect(
-      document.querySelector('.b-card .b-mark.b-done')?.innerHTML,
+      document.querySelector('.w-exc .b-mark.b-done')?.innerHTML,
       'the done mark is the check',
     ).toContain('i-check');
     expect(
-      document.querySelector('.b-card .b-mark.b-done')?.innerHTML,
+      document.querySelector('.w-exc .b-mark.b-done')?.innerHTML,
       'and not the fail cross',
     ).not.toContain('i-x');
+    expect(document.querySelector('.w-exc')?.textContent, 'the row is named').toContain('shipped');
+    expect(await violationsOf(document.body.innerHTML), 'the shelf draws clean').toEqual([]);
   });
 
   it("keeps the board reachable through Android's Back", () => {
@@ -1290,7 +1413,7 @@ describe("the row's own page", () => {
     row(
       task('e1', 'the epic', 'waiting', {
         verify: 'user',
-        waiting_on: { kind: 'decision', detail: 'the words', on: null, verification: true },
+        waiting_on: { kind: 'user', detail: 'the words', on: null, verification: true },
       }),
     ),
     row(task('c1', 'a child', open, { parent: 'e1' })),
@@ -1329,7 +1452,7 @@ describe("the row's own page", () => {
   it('faces axe with the row page open', async () => {
     const held = row(
       task('a1', 'axe it', 'waiting', {
-        waiting_on: { kind: 'decision', detail: 'pick one', on: null, verification: false },
+        waiting_on: { kind: 'user', detail: 'pick one', on: null, verification: false },
       }),
     );
     summon(wireWith([withHistory(held)]));
@@ -1403,476 +1526,6 @@ describe("the row's own page", () => {
     card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
     flushSync();
     expect(document.querySelector('.dr'), 'Space opens the row page').not.toBeNull();
-  });
-});
-
-describe("the completed group's fold", () => {
-  /** A finished row whose last move was `secs` - for a completed row, the moment it finished. */
-  const done = (id: string, secs: number, rank: number, over: Partial<Task> = {}): BoardRow =>
-    row(
-      task(id, `subject ${id}`, 'completed', {
-        rank,
-        updated_at: { secs_since_epoch: secs, nanos_since_epoch: 0 },
-        ...over,
-      }),
-    );
-
-  const lane = '.b-lane[data-state="completed"]';
-  const drawn = (): (string | undefined)[] =>
-    [...document.querySelectorAll<HTMLElement>(`${lane} .b-card`)].map((card) => card.dataset.id);
-
-  /**
-   * **The finished rows fold.** A board that draws every completed row puts
-   * a project's whole history between the reader and the work. The five most
-   * recently finished draw by default - chosen by when they last moved, not
-   * by their place in the lane, so a row that finished late shows whatever
-   * its rank - and the toggle opens the rest. The lane's count stays the
-   * true total: the fold hides rows without hiding how many there are.
-   */
-  it('folds the finished rows to the five most recent, and the toggle opens the rest', async () => {
-    summon(
-      wireWith([
-        done('c1', 100, 1),
-        done('c2', 10, 2),
-        done('c3', 20, 3),
-        done('c4', 30, 4),
-        done('c5', 40, 5),
-        done('c6', 90, 6),
-        done('c7', 80, 7),
-      ]),
-    );
-
-    // The five latest finishes (100, 90, 80, 40, 30), drawn where the lane's
-    // own order puts them; c2 and c3 finished before those and fold away.
-    expect(drawn(), 'the older rows were not held back').toEqual(['c1', 'c4', 'c5', 'c6', 'c7']);
-    expect(
-      document.querySelector(`${lane} .b-count`)?.textContent?.trim(),
-      'the count stopped naming the whole group',
-    ).toBe('7');
-
-    const toggle = document.querySelector<HTMLButtonElement>(`${lane} .b-fold`);
-    if (toggle === null) throw new Error('the finished group drew no fold control');
-    expect(toggle.textContent?.trim(), 'the toggle names the whole group').toBe('show all (7)');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as closed').toBe('false');
-
-    toggle.click();
-    flushSync();
-    expect(drawn(), 'the toggle did not open the rest').toEqual([
-      'c1',
-      'c2',
-      'c3',
-      'c4',
-      'c5',
-      'c6',
-      'c7',
-    ]);
-    expect(toggle.textContent?.trim(), 'the open fold offers the close').toBe('show less');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as open').toBe('true');
-
-    toggle.click();
-    flushSync();
-    expect(drawn(), 'the toggle did not fold back').toEqual(['c1', 'c4', 'c5', 'c6', 'c7']);
-
-    // Under the last card, where a reader scrolling the group meets it: a
-    // control at the lane's head is passed before they know rows are held back.
-    const walk = [...document.querySelectorAll<HTMLElement>(`${lane} .b-card, ${lane} .b-fold`)];
-    expect(
-      walk.at(-1)?.classList.contains('b-fold'),
-      'the fold control is not under the last card',
-    ).toBe(true);
-
-    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
-  });
-
-  /** A group small enough to see whole draws whole: nothing folds, and no control offers to open nothing. */
-  it('draws a finished group of five or fewer whole, with no fold control', () => {
-    summon(
-      wireWith([
-        done('c1', 100, 1),
-        done('c2', 90, 2),
-        done('c3', 80, 3),
-        done('c4', 70, 4),
-        done('c5', 60, 5),
-      ]),
-    );
-    expect(document.querySelectorAll(`${lane} .b-card`)).toHaveLength(5);
-    expect(document.querySelector(`${lane} .b-fold`), 'a whole group offered a fold').toBeNull();
-  });
-
-  /** And a lane with nothing finished draws its empty self: no rows, count zero, no control. */
-  it('draws an empty finished lane with no fold control', () => {
-    summon(wireWith([row(task('p1', 'live', 'pending'))]));
-    const empty = document.querySelector(lane);
-    expect(empty, 'the finished lane went missing').not.toBeNull();
-    expect(empty?.querySelector('.b-count')?.textContent?.trim()).toBe('0');
-    expect(empty?.querySelector('.b-fold'), 'an empty lane offered a fold').toBeNull();
-  });
-
-  /**
-   * **A card being dropped into the folded lane stays drawn.** A drop is
-   * immediate on the page while the core's answer comes later, and a row
-   * that has not finished yet is not one of the five most recent - so a
-   * plain fold would swallow the card mid-gesture and give it back only
-   * when the wire caught up.
-   */
-  it('keeps a card the reader drops into the folded lane drawn', () => {
-    summon(
-      wireWith([
-        ...Array.from({ length: 6 }, (_, i) => done(`c${i + 1}`, 100 + i, i + 1)),
-        row(task('t1', 'moving', 'pending')),
-      ]),
-    );
-
-    const original = Object.getOwnPropertyDescriptor(document, 'elementFromPoint');
-    document.elementFromPoint = () => document.querySelector(lane);
-    const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
-    if (card === null) throw new Error('the card is not on the page');
-    card.dispatchEvent(
-      new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }),
-    );
-    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 60, clientY: 60 }));
-    window.dispatchEvent(new MouseEvent('pointerup', {}));
-    flushSync();
-
-    expect(acts[0]).toEqual({
-      task_move: { project: 'proj', id: 't1', to: 'completed', place: { before: null } },
-    });
-    expect(
-      document.querySelector(`${lane} .b-card[data-id="t1"]`),
-      'the dropped card vanished into the fold',
-    ).not.toBeNull();
-    expect(
-      document.querySelector(`${lane} .b-card[data-id="c1"]`),
-      'the fold stopped holding the older rows back',
-    ).toBeNull();
-
-    if (original !== undefined) {
-      Object.defineProperty(document, 'elementFromPoint', original);
-    } else {
-      Reflect.deleteProperty(document, 'elementFromPoint');
-    }
-  });
-
-  /**
-   * **Every finished row stays reachable.** A folded row is off the page,
-   * and the epic pill and the row page's task list land on cards by id: a
-   * jump aimed at a folded card opens the fold and lands, rather than dying
-   * on a missing element.
-   */
-  it('opens the fold to land a jump on a folded row', async () => {
-    // jsdom performs no layout: scrollIntoView is a browser call the jump
-    // makes, so it is stubbed for the length of the case.
-    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
-    Object.defineProperty(Element.prototype, 'scrollIntoView', {
-      value: (): void => {},
-      configurable: true,
-      writable: true,
-    });
-    summon(
-      wireWith([
-        done('epic', 10, 1, { subject: 'the epic' }),
-        done('c2', 120, 2),
-        done('c3', 130, 3),
-        done('c4', 140, 4),
-        done('c5', 150, 5),
-        done('c6', 160, 6),
-        row(task('kid', 'a child', 'failed', { parent: 'epic' })),
-      ]),
-    );
-
-    expect(document.querySelector('.b-card[data-id="epic"]'), 'the epic drew unfolded').toBeNull();
-    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to the epic"]');
-    if (pill === null) throw new Error('the epic pill is not on the page');
-    pill.click();
-    flushSync();
-    await vi.waitFor(() =>
-      expect(document.activeElement, 'the jump never landed').toBe(
-        document.querySelector('.b-card[data-id="epic"]'),
-      ),
-    );
-
-    expect(
-      document.querySelector('.b-card[data-id="epic"]')?.classList.contains('b-flash'),
-      'the landed card flashes',
-    ).toBe(true);
-
-    if (original !== undefined) {
-      Object.defineProperty(Element.prototype, 'scrollIntoView', original);
-    } else {
-      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
-    }
-  });
-});
-
-describe("the failed and canceled groups' folds", () => {
-  /** An ended row whose last move was `secs` - for an ended row, the moment it ended. */
-  const ended = (
-    id: string,
-    status: 'failed' | 'canceled',
-    secs: number,
-    rank: number,
-    over: Partial<Task> = {},
-  ): BoardRow =>
-    row(
-      task(id, `subject ${id}`, status, {
-        rank,
-        updated_at: { secs_since_epoch: secs, nanos_since_epoch: 0 },
-        ...over,
-      }),
-    );
-
-  const laneOf = (key: TaskStatus): string => `.b-lane[data-state="${key}"]`;
-  const drawnIn = (key: TaskStatus): (string | undefined)[] =>
-    [...document.querySelectorAll<HTMLElement>(`${laneOf(key)} .b-card`)].map(
-      (card) => card.dataset.id,
-    );
-
-  /**
-   * **The failed rows fold like the finished ones.** A failed row is kept
-   * for the record, so the lane accumulates for the life of the project the
-   * same way: the five most recently ended draw by default - by when they
-   * last moved, whatever their place in the lane - and the toggle opens the
-   * rest. The lane's count stays the true total.
-   */
-  it('folds the failed rows to the five most recent, and the toggle opens the rest', async () => {
-    summon(
-      wireWith([
-        ended('f1', 'failed', 100, 1),
-        ended('f2', 'failed', 10, 2),
-        ended('f3', 'failed', 20, 3),
-        ended('f4', 'failed', 30, 4),
-        ended('f5', 'failed', 40, 5),
-        ended('f6', 'failed', 90, 6),
-        ended('f7', 'failed', 80, 7),
-      ]),
-    );
-
-    // The five latest endings (100, 90, 80, 40, 30), drawn where the lane's
-    // own order puts them; f2 and f3 ended before those and fold away.
-    expect(drawnIn('failed'), 'the older rows were not held back').toEqual([
-      'f1',
-      'f4',
-      'f5',
-      'f6',
-      'f7',
-    ]);
-    expect(
-      document.querySelector(`${laneOf('failed')} .b-count`)?.textContent?.trim(),
-      'the count stopped naming the whole group',
-    ).toBe('7');
-
-    const toggle = document.querySelector<HTMLButtonElement>(`${laneOf('failed')} .b-fold`);
-    if (toggle === null) throw new Error('the failed group drew no fold control');
-    expect(toggle.textContent?.trim(), 'the toggle names the whole group').toBe('show all (7)');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as closed').toBe('false');
-
-    toggle.click();
-    flushSync();
-    expect(drawnIn('failed'), 'the toggle did not open the rest').toEqual([
-      'f1',
-      'f2',
-      'f3',
-      'f4',
-      'f5',
-      'f6',
-      'f7',
-    ]);
-    expect(toggle.textContent?.trim(), 'the open fold offers the close').toBe('show less');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as open').toBe('true');
-
-    toggle.click();
-    flushSync();
-    expect(drawnIn('failed'), 'the toggle did not fold back').toEqual([
-      'f1',
-      'f4',
-      'f5',
-      'f6',
-      'f7',
-    ]);
-
-    // Under the last card, where a reader scrolling the group meets it.
-    const walk = [
-      ...document.querySelectorAll<HTMLElement>(
-        `${laneOf('failed')} .b-card, ${laneOf('failed')} .b-fold`,
-      ),
-    ];
-    expect(
-      walk.at(-1)?.classList.contains('b-fold'),
-      'the fold control is not under the last card',
-    ).toBe(true);
-
-    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
-  });
-
-  /** The canceled lane folds the same way: five by default, the rest behind the control. */
-  it('folds the canceled rows to the five most recent, and the toggle opens the rest', () => {
-    summon(
-      wireWith([
-        ended('x1', 'canceled', 50, 1),
-        ended('x2', 'canceled', 5, 2),
-        ended('x3', 'canceled', 10, 3),
-        ended('x4', 'canceled', 60, 4),
-        ended('x5', 'canceled', 70, 5),
-        ended('x6', 'canceled', 80, 6),
-      ]),
-    );
-
-    // The five latest endings (80, 70, 60, 50, 10); x2 folded away.
-    expect(drawnIn('canceled'), 'the older rows were not held back').toEqual([
-      'x1',
-      'x3',
-      'x4',
-      'x5',
-      'x6',
-    ]);
-    expect(
-      document.querySelector(`${laneOf('canceled')} .b-count`)?.textContent?.trim(),
-      'the count stopped naming the whole group',
-    ).toBe('6');
-
-    const toggle = document.querySelector<HTMLButtonElement>(`${laneOf('canceled')} .b-fold`);
-    if (toggle === null) throw new Error('the canceled group drew no fold control');
-    expect(toggle.textContent?.trim(), 'the toggle names the whole group').toBe('show all (6)');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as closed').toBe('false');
-
-    toggle.click();
-    flushSync();
-    expect(drawnIn('canceled'), 'the toggle did not open the rest').toEqual([
-      'x1',
-      'x2',
-      'x3',
-      'x4',
-      'x5',
-      'x6',
-    ]);
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as open').toBe('true');
-
-    toggle.click();
-    flushSync();
-    expect(drawnIn('canceled'), 'the toggle did not fold back').toEqual([
-      'x1',
-      'x3',
-      'x4',
-      'x5',
-      'x6',
-    ]);
-  });
-
-  /** And an empty lane draws its empty self: count zero, no control. */
-  it('draws the empty lanes with no fold control', () => {
-    summon(wireWith([row(task('r1', 'live', 'in_progress'))]));
-    for (const key of ['pending', 'failed', 'canceled'] as const) {
-      const empty = document.querySelector(laneOf(key));
-      expect(empty, `the ${key} lane went missing`).not.toBeNull();
-      expect(empty?.querySelector('.b-count')?.textContent?.trim(), `the ${key} lane's count`).toBe(
-        '0',
-      );
-      expect(empty?.querySelector('.b-fold'), `an empty ${key} lane offered a fold`).toBeNull();
-    }
-  });
-
-  /** A group at its limit draws whole: nothing folds, and no control offers to open nothing. */
-  it('draws a group at its limit whole, with no fold control', () => {
-    summon(
-      wireWith([
-        ...Array.from({ length: 5 }, (_, i) => ended(`f${i + 1}`, 'failed', 100 + i, i + 1)),
-        ...Array.from({ length: 5 }, (_, i) => ended(`x${i + 1}`, 'canceled', 100 + i, i + 1)),
-      ]),
-    );
-    expect(document.querySelectorAll(`${laneOf('failed')} .b-card`)).toHaveLength(5);
-    expect(document.querySelectorAll(`${laneOf('canceled')} .b-card`)).toHaveLength(5);
-    expect(document.querySelector('.b-fold'), 'a whole group offered a fold').toBeNull();
-  });
-
-  /**
-   * **The folds are per lane.** The open state is the reader's own
-   * bookkeeping for each group, not one switch for the board: opening one
-   * leaves every other grown group folded, and opening a second leaves the
-   * first open.
-   */
-  it('opens one group without touching the others', () => {
-    summon(
-      wireWith([
-        ...Array.from({ length: 6 }, (_, i) => ended(`f${i + 1}`, 'failed', 100 + i, i + 1)),
-        ...Array.from({ length: 6 }, (_, i) => ended(`x${i + 1}`, 'canceled', 100 + i, i + 1)),
-      ]),
-    );
-
-    const foldOf = (key: TaskStatus): HTMLButtonElement => {
-      const button = document.querySelector<HTMLButtonElement>(`${laneOf(key)} .b-fold`);
-      if (button === null) throw new Error(`the ${key} group drew no fold control`);
-      return button;
-    };
-
-    foldOf('failed').click();
-    flushSync();
-    expect(drawnIn('failed'), 'the pressed group did not open').toHaveLength(6);
-    expect(foldOf('failed').textContent?.trim(), 'the open group offers the close').toBe(
-      'show less',
-    );
-    expect(drawnIn('canceled'), 'opening one group opened another').toHaveLength(5);
-    expect(
-      foldOf('canceled').textContent?.trim(),
-      'the untouched group stopped naming its count',
-    ).toBe('show all (6)');
-    expect(
-      foldOf('canceled').getAttribute('aria-expanded'),
-      'the untouched group reads as open',
-    ).toBe('false');
-
-    foldOf('canceled').click();
-    flushSync();
-    expect(drawnIn('canceled'), 'the second group did not open').toHaveLength(6);
-    expect(drawnIn('failed'), 'opening the second group folded the first').toHaveLength(6);
-  });
-
-  /**
-   * **Every ended row stays reachable.** A jump aimed at a folded card - an
-   * epic pill, a row page's task list - opens the fold and lands rather than
-   * dying on a missing element.
-   */
-  it('opens the fold to land a jump on a folded row', async () => {
-    // jsdom performs no layout: scrollIntoView is a browser call the jump
-    // makes, so it is stubbed for the length of the case.
-    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
-    Object.defineProperty(Element.prototype, 'scrollIntoView', {
-      value: (): void => {},
-      configurable: true,
-      writable: true,
-    });
-    summon(
-      wireWith([
-        ended('epic', 'failed', 10, 1, { subject: 'the epic' }),
-        ended('f2', 'failed', 120, 2),
-        ended('f3', 'failed', 130, 3),
-        ended('f4', 'failed', 140, 4),
-        ended('f5', 'failed', 150, 5),
-        ended('f6', 'failed', 160, 6),
-        row(task('kid', 'a child', 'pending', { parent: 'epic' })),
-      ]),
-    );
-
-    expect(document.querySelector('.b-card[data-id="epic"]'), 'the epic drew unfolded').toBeNull();
-    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to the epic"]');
-    if (pill === null) throw new Error('the epic pill is not on the page');
-    pill.click();
-    flushSync();
-    await vi.waitFor(() =>
-      expect(document.activeElement, 'the jump never landed').toBe(
-        document.querySelector('.b-card[data-id="epic"]'),
-      ),
-    );
-
-    expect(
-      document.querySelector('.b-card[data-id="epic"]')?.classList.contains('b-flash'),
-      'the landed card flashes',
-    ).toBe(true);
-
-    if (original !== undefined) {
-      Object.defineProperty(Element.prototype, 'scrollIntoView', original);
-    } else {
-      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
-    }
   });
 });
 
@@ -2006,5 +1659,484 @@ describe("the backlog's fold", () => {
     } else {
       Reflect.deleteProperty(document, 'elementFromPoint');
     }
+  });
+});
+
+describe("the window's controls", () => {
+  function windowOver(rows: BoardRow[]): {
+    set: (next: { home: HomeWire; board: BoardWire }) => void;
+  } {
+    const frame = mount(Frames, {
+      target: document.body,
+      props: {
+        initial: wireWith(rows),
+        mode: 'window' as const,
+        onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+      },
+    }) as unknown as { set: (next: { home: HomeWire; board: BoardWire }) => void };
+    flushSync();
+    return frame;
+  }
+
+  const lead = { org: 'TestOrg', project: 'proj', label: 'lead' };
+  const since = { secs_since_epoch: 0, nanos_since_epoch: 0 };
+
+  function decisionRow(): BoardRow {
+    return row(
+      task('q1', 'ship the window?', 'waiting', {
+        owner: lead,
+        request: {
+          question: 'Ship it or iterate?',
+          options: ['ship it', 'iterate'],
+          answer: null,
+        },
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since,
+        },
+      }),
+    );
+  }
+
+  function lookRow(
+    evidence: NonNullable<Task['evidence']>,
+    over: Partial<BoardRow> = {},
+  ): BoardRow {
+    return row(
+      task('l1', 'the board window', 'waiting', {
+        owner: lead,
+        verify: 'user',
+        evidence,
+        links: [
+          {
+            kind: 'pr',
+            label: 'PR the cut',
+            target: 'https://example.invalid/pull/1',
+            state: 'open',
+            added_at: since,
+          },
+        ],
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: true,
+          since,
+        },
+      }),
+      over,
+    );
+  }
+
+  const verified = {
+    commit: 'da08a947e',
+    path: null,
+    excerpt: '4596 client tests pass',
+    verified_at: since,
+    problem: null,
+  };
+
+  it('answers with the pressed option, and the card leaves with the row', () => {
+    const frame = windowOver([decisionRow()]);
+    const ship = byText('ship it');
+    if (ship === null) throw new Error('the option is not drawn');
+    ship.click();
+    flushSync();
+    // No note was written, so none is sent: `words` rides only when it says
+    // something.
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'q1', choice: 'ship it' },
+    });
+
+    // The server's frame after the answer: the row resumed in progress, so
+    // its ask is gone from the window.
+    frame.set(wireWith([row(task('q1', 'ship the window?', 'in_progress', { owner: lead }))]));
+    flushSync();
+    expect(document.querySelector('.w-need'), 'the answered card is still drawn').toBeNull();
+  });
+
+  it('draws a decision card with its options as accessible controls', async () => {
+    windowOver([decisionRow()]);
+    expect(byText('ship it'), 'the option is not drawn').not.toBeNull();
+    expect(byText('iterate'), 'the second option is not drawn').not.toBeNull();
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+  });
+
+  it('approves a verified look, and sends one back with the words typed', () => {
+    windowOver([lookRow(verified)]);
+    const approve = byText('approve');
+    if (approve === null) throw new Error('approve is not drawn on a verified look');
+    approve.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_verdict: { project: 'proj', id: 'l1', approve: true },
+    });
+
+    // The note is behind its own control: a card reads as an ask, not a form.
+    const addNote = [...document.querySelectorAll<HTMLElement>('.w-need button')].find(
+      (button) => button.textContent?.trim() === 'add a note',
+    );
+    if (addNote === undefined) throw new Error('the note control is not drawn');
+    addNote.click();
+    flushSync();
+    const words = document.querySelector<HTMLInputElement>(
+      '[aria-label="what to change (sent back with it)"]',
+    );
+    if (words === null) throw new Error('the send-back field is not drawn');
+    words.value = 'tighten the rail';
+    words.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    byText('send back')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_verdict: { project: 'proj', id: 'l1', approve: false, words: 'tighten the rail' },
+    });
+  });
+
+  it('draws the evidence state even when the claim carries no excerpt', () => {
+    windowOver([
+      lookRow({
+        commit: 'da08a947e',
+        path: null,
+        excerpt: null,
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    expect(
+      line?.textContent,
+      'a verified claim with no excerpt still states its verdict',
+    ).toContain('evidence verified');
+    expect(line?.querySelector('.w-more'), 'and offers no expand for nothing').toBeNull();
+  });
+
+  it('holds the approve door on a look with no verified evidence', () => {
+    windowOver([
+      lookRow({
+        commit: 'deadbeef',
+        path: null,
+        excerpt: null,
+        verified_at: null,
+        problem: 'commit deadbeef does not exist',
+      }),
+    ]);
+    expect(byText('approve'), 'an unverified look offers no approve').toBeNull();
+    expect(document.querySelector('.w-hold')?.textContent).toContain('no verified evidence');
+    expect(byText('send back'), 'the send-back door stays').not.toBeNull();
+  });
+
+  it('holds the approve door on a root whose children are still open', () => {
+    const child = (id: string, status: Task['status']): BoardRow =>
+      row(task(id, `child ${id}`, status, { parent: 'l1' }));
+    windowOver([
+      lookRow(verified, { rollup: [1, 3] }),
+      child('c1', 'in_progress'),
+      child('c2', 'in_progress'),
+      child('c3', 'failed'),
+    ]);
+    expect(byText('approve'), 'a root with open children cannot close').toBeNull();
+    expect(document.querySelector('.w-hold')?.textContent).toContain('2 child rows are still open');
+  });
+
+  it('offers the approve door when the only children left are terminal', () => {
+    // **The bug's own case**: a failed or canceled child is terminal, so the
+    // core accepts the root's close - while the old completed-only rollup
+    // read `0 < 2` and withheld the door. The count of OPEN children is what
+    // decides, and here it is zero.
+    const child = (id: string, status: Task['status']): BoardRow =>
+      row(task(id, `child ${id}`, status, { parent: 'l1' }));
+    windowOver([
+      lookRow(verified, { rollup: [0, 2] }),
+      child('c1', 'failed'),
+      child('c2', 'canceled'),
+    ]);
+    expect(byText('approve'), 'a terminal-only tree closes on the look').not.toBeNull();
+    expect(document.querySelector('.w-hold'), 'no refusal is drawn').toBeNull();
+  });
+});
+
+describe("the window's ask kinds and its attention", () => {
+  const lead = { org: 'TestOrg', project: 'proj', label: 'lead' };
+  const since = { secs_since_epoch: 0, nanos_since_epoch: 0 };
+
+  function windowOver(
+    rows: BoardRow[],
+    attention: AttentionWire | null = null,
+  ): { set: (next: { home: HomeWire; board: BoardWire }) => void } {
+    const held = wireWith(rows);
+    const first = held.board.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const frame = mount(Frames, {
+      target: document.body,
+      props: {
+        initial: { home: held.home, board: { projects: [{ ...first, attention }] } },
+        mode: 'window' as const,
+        onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+      },
+    }) as unknown as { set: (next: { home: HomeWire; board: BoardWire }) => void };
+    flushSync();
+    return frame;
+  }
+
+  function requestRow(
+    id: string,
+    kind: 'decision' | 'clarification' | 'exception' | 'teaching',
+    over: Partial<Task> = {},
+  ): BoardRow {
+    return row(
+      task(id, `the ${kind}`, 'waiting', {
+        owner: lead,
+        request: {
+          kind,
+          question: 'what should I do?',
+          options: kind === 'decision' ? ['one', 'two'] : [],
+          class: kind === 'teaching' ? 'flaky-tests' : null,
+          answer: null,
+        },
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since,
+        },
+        ...over,
+      }),
+    );
+  }
+
+  function type(selector: string, text: string): void {
+    const input = document.querySelector<HTMLInputElement>(selector);
+    if (input === null) throw new Error(`${selector} is not drawn`);
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+  }
+
+  it('answers a clarification in the reader own words', () => {
+    windowOver([requestRow('a1', 'clarification')]);
+    expect(byText('answer in your words'), 'the words door is not drawn').not.toBeNull();
+    byText('answer in your words')?.click();
+    flushSync();
+    type('[aria-label="your answer"]', 'the sqlite store');
+    byText('answer')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'a1', text: 'the sqlite store' },
+    });
+  });
+
+  it('disposes of an exception with one of the four named disposals', async () => {
+    windowOver([requestRow('a1', 'exception')]);
+    for (const word of ['retry', 'rescope', 'drop', 'diagnose']) {
+      expect(byText(word), `${word} is not offered`).not.toBeNull();
+    }
+    // The new bar is made of native buttons and the footer of native
+    // buttons and links, so axe over the drawn card is the check that the
+    // kinds' controls are usable, not just present.
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+    byText('rescope')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'a1', disposition: 'rescope' },
+    });
+  });
+
+  it('settles a teaching with the lesson, which is also the answer', () => {
+    windowOver([requestRow('a1', 'teaching')]);
+    byText('write the lesson')?.click();
+    flushSync();
+    type('[aria-label="the lesson that settles the class"]', 'run the suite before pushing');
+    byText('settle the class')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: {
+        project: 'proj',
+        id: 'a1',
+        text: 'run the suite before pushing',
+        lesson: 'run the suite before pushing',
+      },
+    });
+  });
+
+  it("marks an ask seen and snoozes it, as the reader's own acts", () => {
+    windowOver([requestRow('a1', 'decision')]);
+    byText('mark seen')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({ task_ack: { project: 'proj', id: 'a1' } });
+    // Snooze is ONE control with a small menu: the trigger, then the
+    // deferral it opens onto.
+    document.querySelector<HTMLButtonElement>('[aria-label="snooze this ask"]')?.click();
+    flushSync();
+    byText('1h')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({ task_snooze: { project: 'proj', id: 'a1', until: '1h' } });
+    document.querySelector<HTMLButtonElement>('[aria-label="snooze this ask"]')?.click();
+    flushSync();
+    byText('until it moves')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_snooze: { project: 'proj', id: 'a1', until: 'activity' },
+    });
+  });
+
+  it('draws every kind of ask accessibly, the footer controls included', async () => {
+    const look = row(
+      task('look', 'a look', 'waiting', {
+        owner: lead,
+        verify: 'user',
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: true,
+          since,
+          acknowledged_at: since,
+        },
+      }),
+    );
+    for (const card of [
+      look,
+      requestRow('a1', 'decision'),
+      requestRow('a2', 'clarification'),
+      requestRow('a3', 'exception'),
+      requestRow('a4', 'teaching'),
+    ]) {
+      const frame = mount(Frames, {
+        target: document.body,
+        props: {
+          initial: wireWith([card]),
+          mode: 'window' as const,
+          onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+        },
+      });
+      flushSync();
+      expect(await violationsOf(document.body.innerHTML), `axe on ${card.task.id}`).toEqual([]);
+      await unmount(frame);
+    }
+  });
+
+  it('draws an acknowledged ask as seen, not as a press to make again', () => {
+    windowOver([
+      requestRow('a1', 'decision', {
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since,
+          acknowledged_at: since,
+        },
+      }),
+    ]);
+    expect(byText('mark seen'), 'the press is still offered').toBeNull();
+    const card = document.querySelector('.w-need');
+    expect(card?.classList.contains('seen'), 'the card does not say it was seen').toBe(true);
+    expect(card?.textContent).toContain('seen');
+  });
+
+  it('snoozed cards stay drawn, and say so', () => {
+    windowOver([
+      requestRow('a1', 'decision', {
+        updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since,
+          snoozed: {
+            until: {
+              at: {
+                secs_since_epoch: Math.floor(Date.now() / 1_000) + 3_600,
+                nanos_since_epoch: 0,
+              },
+            },
+            since,
+          },
+        },
+      }),
+    ]);
+    const card = document.querySelector('.w-need');
+    expect(card?.classList.contains('snoozed'), 'the card does not say it is snoozed').toBe(true);
+    expect(card?.textContent).toContain('snoozed');
+  });
+
+  it('draws the since-last-look strip, the counts, and the sample behind it', () => {
+    const attention: AttentionWire = {
+      last_look: { secs_since_epoch: 1_000, nanos_since_epoch: 0 },
+      checked_at: { secs_since_epoch: 2_000, nanos_since_epoch: 0 },
+      agents: 2,
+      delta: { moved: 3, landed: 1, expired: 0, merged: 2 },
+      sample: {
+        rows: [
+          {
+            seat: 'w-1',
+            tool: 'Bash',
+            detail: 'cargo nextest run',
+            at: { secs_since_epoch: 1_500, nanos_since_epoch: 0 },
+          },
+        ],
+        sampled: 1,
+        total: 7,
+      },
+    };
+    windowOver([], attention);
+    // One line per count: a payload without items draws each count as a
+    // line of its own rather than one joined sentence.
+    const lines = [...document.querySelectorAll<HTMLElement>('.w-digest-line')];
+    const drawn = lines.map((line) => line.textContent?.replace(/\s+/g, ' ').trim()).join(' | ');
+    expect(drawn, 'the counts are one joined line, not their own lines').toContain('merged');
+    expect(drawn).toContain('2');
+    expect(drawn).toContain('moved');
+    expect(drawn).toContain('3');
+    expect(drawn).toContain('sampled');
+    expect(drawn).toContain('1 of 7 agent actions');
+    expect(document.querySelector('.w-sample'), 'the sample drew unasked').toBeNull();
+    const sampled = document.querySelector<HTMLButtonElement>(
+      '[aria-label="sampled: 1 of 7 agent actions"]',
+    );
+    if (sampled === null) throw new Error('the sampled line does not open');
+    sampled.click();
+    flushSync();
+    expect(
+      document.querySelector('.w-sample')?.textContent,
+      'the sampled action is not named',
+    ).toContain('cargo nextest run');
+  });
+
+  it('states the all-clear as a claim with its evidence', () => {
+    windowOver([], {
+      last_look: { secs_since_epoch: 1_000, nanos_since_epoch: 0 },
+      checked_at: { secs_since_epoch: 2_000, nanos_since_epoch: 0 },
+      agents: 2,
+      delta: { moved: 3, landed: 1, expired: 0, merged: 2 },
+      sample: { rows: [], sampled: 0, total: 7 },
+    });
+    const claim = document.querySelector('.w-claim');
+    if (claim === null) throw new Error('the all-clear is drawn as a blank');
+    expect(claim.textContent).toContain('nothing needs you');
+    expect(claim.textContent).toContain('2 agents ran');
+    expect(claim.textContent).toContain('sampled 0 of 7 agent actions');
+  });
+
+  it('stamps the last look when the reader leaves the window', async () => {
+    const held = wireWith([]);
+    const frame = mount(Frames, {
+      target: document.body,
+      props: {
+        initial: held,
+        mode: 'window' as const,
+        onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+      },
+    });
+    flushSync();
+    expect(acts, 'the stamp fired while the reader was still looking').toEqual([]);
+    await unmount(frame);
+    expect(acts.at(-1)).toEqual({ board_seen: { project: 'proj' } });
   });
 });

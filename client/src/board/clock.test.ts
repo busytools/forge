@@ -36,6 +36,7 @@ function row(over: Partial<BoardRow> = {}, task: Record<string, unknown> = {}): 
       id: 't1',
       project_name: 'proj',
       status: 'in_progress',
+      kind: 'finite',
       updated_at: { secs_since_epoch: 1_000, nanos_since_epoch: 0 },
       estimate: null,
       waiting_on: null,
@@ -43,15 +44,9 @@ function row(over: Partial<BoardRow> = {}, task: Record<string, unknown> = {}): 
     },
     worked_secs: 60,
     updated_secs_ago: 0,
-    marks: {
-      ready: false,
-      in_review: false,
-      overdue: false,
-      no_movement: false,
-      waiting_too_long: false,
-      stale: false,
-      to_close: false,
-    },
+    owner_live: true,
+    wait_secs: null,
+    marks: { ready: false, in_review: false, overdue: false, stale: false, to_close: false },
     rollup: null,
     parent_subject: null,
     history: [],
@@ -101,8 +96,8 @@ describe('the board clock', () => {
     expect(agedRow(aged, Math.floor(encodedAt / 1000) + 60, encodedAt).updated_secs_ago).toBe(360);
   });
 
-  /** `overdue` crosses from the advanced worked time; the two window marks
-   * cross from the age, and a parked wait carries neither. */
+  /** `overdue` crosses from the advanced worked time or a wait past the
+   * band; `stale` from the age, and a parked wait carries neither. */
   it('crosses the time marks at the server thresholds', () => {
     const encodedAt = 1_700_000_000_000;
     const nowSecs = Math.floor(encodedAt / 1000);
@@ -121,8 +116,8 @@ describe('the board clock', () => {
       { status: 'waiting', updated_at: { secs_since_epoch: nowSecs, nanos_since_epoch: 0 } },
     );
     const stale = agedRow(old, nowSecs + STALE_SECS + 1, encodedAt);
-    expect(stale.marks.no_movement).toBe(true);
-    expect(stale.marks.waiting_too_long, 'a waiting row past the window marks too').toBe(true);
+    expect(stale.marks.stale, 'a row nobody moved is stale').toBe(true);
+    expect(stale.marks.overdue, 'a waiting row past the band is overdue').toBe(true);
 
     const parked = row(
       {},
@@ -133,29 +128,21 @@ describe('the board clock', () => {
       },
     );
     const deferred = agedRow(parked, nowSecs + STALE_SECS + 1, encodedAt);
-    expect(deferred.marks.no_movement, 'a parked wait carries no movement mark').toBe(false);
-    expect(deferred.marks.waiting_too_long, 'a parked wait carries no wait mark').toBe(false);
+    expect(deferred.marks.stale, 'a parked wait carries no stale mark').toBe(false);
+    expect(deferred.marks.overdue, 'a parked wait carries no overdue mark').toBe(false);
   });
 
   /** The marks that are not about time are the server's and pass through. */
   it('keeps the server marks that time does not move', () => {
     const encodedAt = 1_700_000_000_000;
     const marked = row({
-      marks: {
-        ready: true,
-        in_review: true,
-        overdue: false,
-        no_movement: false,
-        waiting_too_long: false,
-        stale: true,
-        to_close: true,
-      },
+      marks: { ready: true, in_review: true, overdue: false, stale: false, to_close: true },
     });
     const aged = agedRow(marked, Math.floor(encodedAt / 1000) + 5, encodedAt);
     expect(aged.marks.ready).toBe(true);
     expect(aged.marks.in_review).toBe(true);
-    expect(aged.marks.stale).toBe(true);
     expect(aged.marks.to_close).toBe(true);
+    expect(aged.marks.stale, 'a row that just moved is not stale').toBe(false);
   });
 
   it('advances every project and row of a record', () => {

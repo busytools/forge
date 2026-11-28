@@ -2277,6 +2277,7 @@ fn subject_label(subject: &Subject) -> String {
         Subject::Session(slot) => slot.display(),
         Subject::Home => "home".to_owned(),
         Subject::Board => "board".to_owned(),
+        Subject::Archived => "archived".to_owned(),
         Subject::Usage => "usage".to_owned(),
         Subject::DictateModels => "dictate_models".to_owned(),
         Subject::Extensions => "extensions".to_owned(),

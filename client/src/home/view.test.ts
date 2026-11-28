@@ -235,12 +235,12 @@ function boardRow(task: Task): BoardRow {
     task,
     worked_secs: 0,
     updated_secs_ago: 0,
+    owner_live: true,
+    wait_secs: null,
     marks: {
       ready: false,
       in_review: false,
       overdue: false,
-      no_movement: false,
-      waiting_too_long: false,
       stale: false,
       to_close: false,
     },
@@ -296,7 +296,8 @@ function task(status: TaskStatus, subject: string): Task {
     rank: null,
     verify: null,
     links: [],
-    attempt: 0,
+    kind: 'finite',
+    version: 0,
     archived_at: null,
     created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
@@ -723,7 +724,7 @@ describe('the fleet the snapshot describes', () => {
           rows: 4,
           misses: [
             { kind: 'stalled', label: 'queue is stalling' },
-            { kind: 'no-row', label: 'w1 holds no row' },
+            { kind: 'no-row', label: 'w1 holds no row', worker: 'w1' },
             { kind: 'unknown', label: 'a miss this client does not know' },
           ],
         },
@@ -746,6 +747,7 @@ describe('the fleet the snapshot describes', () => {
     expect(missFrom({ unaccounted_worker: 'w1' })).toEqual({
       kind: 'no-row',
       label: 'w1 holds no row',
+      worker: 'w1',
     });
     expect(missFrom(7).kind).toBe('unknown');
   });

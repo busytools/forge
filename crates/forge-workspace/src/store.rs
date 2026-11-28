@@ -31,8 +31,10 @@ use std::path::Path;
 
 use anyhow::Context;
 
+pub mod ack_named;
 pub mod bench_results;
 pub mod biometric;
+pub mod board_seen;
 pub mod cron;
 pub mod cron_names;
 pub mod dictate_models;
@@ -41,6 +43,7 @@ pub mod gotify;
 pub mod handoffs;
 pub mod model_catalog;
 pub mod plugins;
+pub mod policy;
 pub mod pricing;
 pub mod review;
 pub mod session_tags;

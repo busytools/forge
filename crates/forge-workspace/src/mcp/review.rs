@@ -1366,6 +1366,7 @@ mod tests {
         config.projects.push(crate::config::LoadedProject {
             name: "myproj".to_owned(),
             path: dir.path().to_path_buf(),
+            connector: None,
             display_path: dir.path().to_string_lossy().into_owned(),
             org: "TestOrg".to_owned(),
             accounts: Vec::new(),

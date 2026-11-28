@@ -464,6 +464,10 @@ impl Workspace {
         let workspace = Self {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
+            // The stub accepts every artifact: a test that is about the
+            // gate installs its own verifier with
+            // `install_evidence_verifier`.
+            evidence_verifier: parking_lot::RwLock::new(Arc::new(AcceptingEvidence)),
             settings,
             settings_version: std::sync::OnceLock::new(),
             settings_write: parking_lot::Mutex::new(()),
@@ -529,7 +533,7 @@ impl Workspace {
             session_teardowns: Mutex::new(HashMap::new()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             live_workers: Mutex::new(HashMap::new()),
-            idle_sweeps: Mutex::new(HashMap::new()),
+            drive_clocks: Mutex::new(HashMap::new()),
             worktree_claims: std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
@@ -787,6 +791,37 @@ impl Workspace {
         );
     }
 
+    /// [`Workspace::seed_test_project`] with an outward connector, so the
+    /// gate's connector half has a project that opted in. Test-only.
+    pub fn seed_test_project_with_connector(
+        &self,
+        name: &str,
+        path: &str,
+        connector: crate::config::ConnectorKind,
+    ) {
+        self.test_extra_projects.lock().push(crate::config::LoadedProject {
+            name: name.to_owned(),
+            path: std::path::PathBuf::from(path),
+            connector: Some(connector),
+            display_path: path.to_owned(),
+            org: "TestOrg".to_owned(),
+            accounts: vec!["acct-a".to_owned()],
+            fallback_accounts: Vec::new(),
+            model: None,
+            env: std::collections::HashMap::new(),
+            env_file: None,
+            max_workers: None,
+            permission_mode: forge_primitives::permission::PermissionMode::Auto,
+            document_roots: Vec::new(),
+            handoff: None,
+            browser_profile: forge_primitives::browser::ProfileKey::from_parts_for_test(
+                "TestOrg", "default",
+            ),
+            slack_workspace: None,
+            engine: forge_agent::client::EngineSetting::cli(),
+        });
+    }
+
     /// [`Workspace::seed_test_project`] with an engine, so a test can drive
     /// the spawn paths a `forge` key changes. Test-only.
     pub fn seed_test_project_with_engine(
@@ -852,6 +887,7 @@ impl Workspace {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
+            connector: None,
             display_path: path.to_owned(),
             org: "TestOrg".to_owned(),
             accounts: vec!["acct-a".to_owned()],
@@ -1336,6 +1372,31 @@ impl Workspace {
                 cwd: None,
             },
         );
+    }
+}
+
+/// The testing stub's evidence check: every claim verifies, so a test that
+/// is not about the gate needs no repository behind it.
+pub(crate) struct AcceptingEvidence;
+
+impl crate::env::evidence::EvidenceVerifier for AcceptingEvidence {
+    fn verify(
+        &self,
+        _repo: &std::path::Path,
+        _commit: Option<&str>,
+        _path: Option<&str>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+impl Workspace {
+    /// Install the verifier the evidence gate asks on a move to completed.
+    pub fn install_evidence_verifier(
+        &self,
+        verifier: Arc<dyn crate::env::evidence::EvidenceVerifier>,
+    ) {
+        *self.evidence_verifier.write() = verifier;
     }
 }
 

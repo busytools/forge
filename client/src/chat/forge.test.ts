@@ -715,7 +715,7 @@ describe('the tasks card', () => {
       );
       return card?.chips;
     };
-    expect(chips({ id: 't-1', kind: 'decision' }), "a decision is the reader's to make").toEqual([
+    expect(chips({ id: 't-1', kind: 'user' }), "a decision is the reader's to make").toEqual([
       { text: 'waiting on you', tone: 'warn' },
     ]);
     expect(chips({ id: 't-1', kind: 'resource' })).toEqual([
@@ -772,7 +772,7 @@ describe('the tasks card', () => {
       );
       return card?.chips?.[0]?.text ?? '';
     };
-    expect(chatWord({ id: 't-1', kind: 'decision' }), "the board's decision word").toBe(onYou);
+    expect(chatWord({ id: 't-1', kind: 'user' }), "the board's decision word").toBe(onYou);
     expect(
       chatWord({ id: 't-1', kind: 'dependency', on: 't-9' }),
       "the board's dependency word, with a blocker",
@@ -836,6 +836,20 @@ describe('the tasks card', () => {
         when: 'unclaimed',
       },
     ]);
+  });
+
+  it('draws a cut list envelope with what it withheld and how to narrow', () => {
+    const envelope = {
+      rows: [RECORD],
+      returned: 1,
+      total: 47,
+      truncated: true,
+      narrow: 'narrow with `owner`, `parent`, `status`, `kind` or `ready`',
+    };
+    const card = forgeCardOf('mcp__forge__tasks__list', {}, result(JSON.stringify(envelope)));
+    expect(card?.figure, 'the figure counts what the answer carries').toBe('1 in flight');
+    const said = card?.pieces.find((piece) => piece.kind === 'text');
+    expect(said?.kind === 'text' ? said.text : '').toContain('showing 1 of 47');
   });
 
   it('reads the tasks list past the clock line the tool opens it with', () => {

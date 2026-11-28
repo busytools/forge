@@ -62,7 +62,8 @@ use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
 use forge_server::transport::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use forge_server::transport::wire::{
-    OutdatedReasonWire, ReviewedThreadWire, StreamVersion, ThreadResolutionWire, TurnWire,
+    ArchivedWire, OutdatedReasonWire, ProjectArchivedWire, ProjectIdentity, ReviewedThreadWire,
+    StreamVersion, ThreadResolutionWire, TurnWire,
 };
 use forge_server::{Command, SessionUpdate};
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_baseline_from};
@@ -294,7 +295,7 @@ census!(OutdatedReasonWire,
     outdated_reason_census, OUTDATED_REASON_VARIANTS);
 
 census!(Subject,
-    [Home struct, Board struct, Session tuple, Usage struct, DictateModels struct,
+    [Home struct, Board struct, Archived struct, Session tuple, Usage struct, DictateModels struct,
      Extensions struct, Dictate struct],
     subject_census, SUBJECT_VARIANTS);
 
@@ -311,7 +312,7 @@ census!(SessionUpdate,
         ForgeAccountIdentity struct, DictateOverrides struct,
         ContextUsageSnapshot struct, McpSnapshot struct,
         ProcessesChanged struct, MonitorsChanged struct, BackgroundTasksChanged struct,
-        WorkChanged struct, TasksChanged struct, CronSchedulesChanged struct,
+        WorkChanged struct, TasksChanged struct, TaskDetail struct, CronSchedulesChanged struct,
         ConnectorSubscriptionsChanged struct,
         SlashCommandsChanged struct, SubagentsChanged struct,
         SubagentCardsChanged struct, FileIndexChanged struct,
@@ -363,8 +364,10 @@ census!(Command,
         PluginInstall struct, PluginUpdate struct, PluginUpdateAll struct,
         PluginCheckUpdates struct, MarketplaceAdd struct, MarketplaceRepair struct,
         SpawnProject struct,
-        TaskVerdict struct, TaskAnswer struct, TaskRank struct, TaskAssign struct,
+        TaskVerdict struct, TaskAnswer struct, TaskAck struct, TaskSnooze struct,
+        BoardSeen struct, TaskRank struct, TaskAssign struct,
         TaskCreate struct, TaskMove struct, TaskReopen struct, TaskReserve struct,
+        TaskRestore struct, TaskDetail struct,
         DeliverPeerPrompt struct,
         SpawnWorker struct, CloseWorker struct, DespawnWorker struct,
         DeliverWorkerPrompt struct, DeliverWorkerPromptToLead struct,
@@ -980,6 +983,7 @@ fn frames_record() -> Value {
     let subjects = [
         Subject::Home,
         Subject::Board,
+        Subject::Archived,
         Subject::Usage,
         Subject::Session(seat.clone()),
         Subject::DictateModels,
@@ -1865,6 +1869,47 @@ fn frames_record() -> Value {
             .expect("the board fixture parses"),
         }),
     );
+    // **The archived read, built from the server's own types.** Its rows are
+    // whole `Task`s, unlike the board's window rows, so the client's shelf
+    // reads field names this record pins: a rename here is a drawer that
+    // draws blank. One row of each shape-bearing member rides the sample; an
+    // empty list pins nothing.
+    payload_sampled.insert(
+        "SnapshotArchived".to_owned(),
+        shape_of(&ServerMessage::Snapshot {
+            subject: Subject::Archived,
+            version: StreamVersion(1),
+            data: serde_json::to_value(ArchivedWire {
+                projects: vec![ProjectArchivedWire {
+                    project: ProjectIdentity { org: "TestOrg".to_owned(), name: "proj".to_owned() },
+                    rows: vec![
+                        serde_json::from_value::<forge_primitives::tasks::Task>(json!({
+                            "id": "t-archived",
+                            "project_name": "proj",
+                            "subject": "a closed row",
+                            "status": "completed",
+                            "owner": { "org": "TestOrg", "project": "proj", "label": "lead" },
+                            "links": [{
+                                "kind": "pr",
+                                "label": "the change",
+                                "target": "https://example.test/pr/1",
+                                "state": "merged",
+                                "last_check": null,
+                                "added_at": { "secs_since_epoch": 1, "nanos_since_epoch": 0 }
+                            }],
+                            "version": 2,
+                            "archived_at": { "secs_since_epoch": 5, "nanos_since_epoch": 0 },
+                            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+                            "updated_at": { "secs_since_epoch": 4, "nanos_since_epoch": 0 }
+                        }))
+                        .expect("the archived sample row decodes against the Task type"),
+                    ],
+                }],
+                refused: None,
+            })
+            .expect("the archived read encodes"),
+        }),
+    );
     // **The extensions read, built from the server's own types** so a field
     // rename moves this record rather than only the page. One of each member
     // rides the sample: an empty list pins nothing about the rows it would
@@ -2078,6 +2123,23 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             reserved: true,
         }),
     );
+    // **The person's own acts on the window**, written by hand in the page:
+    // an ack, a snooze and the last-look stamp. A rename on either side
+    // would leave the literal writing a key nothing reads, silently.
+    sampled.insert(
+        "TaskAck".to_owned(),
+        sample(Command::TaskAck { project: "proj".to_owned(), id: "t-1".to_owned() }),
+    );
+    sampled.insert(
+        "TaskSnooze".to_owned(),
+        sample(Command::TaskSnooze {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            until: "1h".to_owned(),
+        }),
+    );
+    sampled
+        .insert("BoardSeen".to_owned(), sample(Command::BoardSeen { project: "proj".to_owned() }));
     // **The held vault call's answer**, which the dock writes by hand: the
     // unlock material lives INSIDE `answer`; a rename of `answer`, `decision`,
     // `master_password` or `two_factor` would leave the client's literal

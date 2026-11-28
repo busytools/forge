@@ -22,11 +22,14 @@ import type { Store } from '../stores';
 import {
   applyConnectors,
   applyCrons,
+  applyDetail,
   applyTasks,
   boardFrom,
+  carryDetail,
   connectorsFrame,
   coversBoard,
   cronsFrame,
+  taskDetailFrame,
   tasksFrame,
   type BoardRead,
   type BoardWire,
@@ -120,7 +123,10 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       readAt = Date.now();
     }
     const record = data === null ? null : boardFrom(data as unknown as BoardWire);
-    drawn = record;
+    // **A whole read never carries the drawer's own rows; they survive it.**
+    // The record replaces the lanes, and a row the drawer asked whole keeps
+    // its brief and history across the read.
+    drawn = record === null ? null : carryDetail(drawn, record);
     view.set({
       wire: drawn,
       refused: null,
@@ -211,6 +217,18 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         const frame = tasksFrame(message.update);
         const applied =
           frame === null ? null : applyTasks(drawn, frame.project, frame.tasks, Date.now());
+        if (applied !== null) {
+          drawn = applied;
+          view.set(folded());
+        }
+        return;
+      }
+      // **A drawer's own ask, applied where it lands.** The frame carries one
+      // row whole - its brief and its history - so the drawer opens from the
+      // frame rather than a whole board read.
+      const detail = taskDetailFrame(message.update);
+      if (detail !== null) {
+        const applied = applyDetail(drawn, detail.project, detail.row ?? null);
         if (applied !== null) {
           drawn = applied;
           view.set(folded());

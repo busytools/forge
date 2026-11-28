@@ -17,4 +17,5 @@ export const homeWire: HomeWire = homeFrom(home as unknown as HomeWire);
 // The fixture is the shape the server writes, so the narrowing answers one;
 // a null here would be the fixture going stale, which every page test using
 // it would fail on anyway.
-export const boardWire: BoardWire = boardFrom(board) ?? board;
+export const boardWire: BoardWire =
+  boardFrom(board as unknown as BoardWire) ?? (board as unknown as BoardWire);

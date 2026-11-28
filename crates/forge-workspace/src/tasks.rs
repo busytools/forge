@@ -8,11 +8,13 @@
 //! a cancel of a row waiting on the user carries the reason it records,
 //! and every status change lands in the history.
 
-use std::time::SystemTime;
+use std::collections::HashSet;
+use std::time::{Duration, SystemTime};
 
 use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{
-    Attestation, By, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
+    Answer, AnswerValue, AskKind, Attestation, By, Deadline, DefaultIfIgnored, Disposition,
+    LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -23,16 +25,36 @@ use crate::workspace::Workspace;
 /// Why a claim was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClaimError {
-    /// No row carries the id (or the epic has nothing ready).
+    /// No row carries the id.
     NotFound,
     /// The stated id matched more than one row, each named.
     Ambiguous(Vec<IdCandidate>),
     /// The row is held by a live seat, named.
     OwnedByLiveSeat(String),
-    /// The row is waiting on something, or nothing ready was there to take.
-    NotReady,
+    /// The row is reserved for the user: the sweep leaves it, and so does
+    /// every caller's claim.
+    Reserved,
+    /// The row is not pending, so there is nothing to start.
+    NotPending(TaskStatus),
+    /// The row holds a wait: it is in play, not startable.
+    Waiting,
+    /// The caller read a version the row is no longer at: another writer
+    /// got there first.
+    VersionMismatch { expected: u64, current: u64 },
     /// The caller already has a row in progress.
     AlreadyWorking,
+}
+
+/// The status as a refusal spells it.
+fn status_word(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Pending => "pending",
+        TaskStatus::InProgress => "in progress",
+        TaskStatus::Waiting => "waiting",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Canceled => "canceled",
+    }
 }
 
 /// Why a move was refused.
@@ -78,6 +100,10 @@ pub(crate) enum MoveError {
     /// by close is not a way to settle it either. The row's SUBJECT rides
     /// it, as the delete's does.
     ClosingLook(String),
+    /// A delete would remove a row whose decision was answered: the record
+    /// of what was asked and what was chosen is the only copy, and removal
+    /// is not a way to erase it. The row's SUBJECT rides it.
+    DeletingDecision(String),
     /// An attestation came from a session that is not the project's lead:
     /// only the lead may stand behind the user's recorded approval.
     AttestLeadOnly,
@@ -87,6 +113,63 @@ pub(crate) enum MoveError {
     /// A reopen named a row carrying no lead attestation: there is no
     /// attested look to strike.
     NotAttested,
+    /// A completion claim carries no evidence at all: absence is never
+    /// success, so there is nothing for forge to check.
+    EvidenceMissing,
+    /// The evidence names an artifact the project's repository does not
+    /// hold, or the check could not run. The reason is the check's own.
+    EvidenceUnverified(String),
+    /// An update named a version the row is not at: another writer got
+    /// there first, and the caller is reading a stale record.
+    VersionMismatch { expected: u64, current: u64 },
+    /// A decision answer named a choice the row's options do not carry.
+    NotAnOption(String),
+    /// The answer's shape does not fit the ask's kind: a clarification
+    /// takes text, an exception a disposition, a teaching its lesson. The
+    /// kind's need rides it.
+    AnswerShape(String),
+    /// The ask's class is already settled by a project policy note. The
+    /// class and the note's text ride it.
+    PolicySettled { class: String, text: String },
+    /// A wait was stated on the user with nothing to answer and no look to
+    /// give: neither an ask nor a verification park, it would draw as a
+    /// card with no door. Every park on the user is one or the other.
+    BareUserWait,
+    /// A teaching's policy note could not be stored, so the answer was not
+    /// recorded: a success that leaves the lesson on nothing is not one.
+    /// The class rides it.
+    PolicyWriteFailed(String),
+    /// The archive could not be read, so the row it was asked about is
+    /// unknown rather than absent. The read's own error rides it.
+    ArchiveUnreadable(String),
+}
+
+/// How long a terminal tree stays in the live set before the retention
+/// archives it. The bulk board hides terminal rows at once; this window is
+/// only how long the row stays in the live set and its store, so a
+/// just-finished row can be read, linked or reopened without a restore
+/// first. A tree under a live epic waits for the epic, which closes it.
+pub(crate) const RETENTION_SECS: u64 = 24 * 3_600;
+
+/// How long a connector's check of a link stays fresh. The sweep refreshes
+/// the stale ones, and a completion that rests on an older or failed check
+/// is refused - a cached verdict is evidence only while it is current.
+pub(crate) const CONNECTOR_REFRESH_SECS: u64 = 300;
+
+/// The deadline a wait on the person carries when its asker names none:
+/// **every item carries one**, and its named default is escalate - never
+/// approve, because consent by inattention is not consent.
+pub(crate) const USER_WAIT_DEADLINE_SECS: u64 = 24 * 3_600;
+
+/// The deadline every wait on the person is minted with when the asker
+/// names none. The default escalates to the lead, which raises the ask
+/// again or withdraws it with a reason.
+pub(crate) fn default_user_deadline(at: SystemTime) -> Deadline {
+    Deadline {
+        at: at + Duration::from_secs(USER_WAIT_DEADLINE_SECS),
+        default: DefaultIfIgnored::Escalate,
+        ran_at: None,
+    }
 }
 
 /// Whether a row is parked on the user's own look - the verification wait
@@ -103,7 +186,7 @@ fn parked_on_look(task: &Task) -> bool {
         && task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
 }
 
-/// Whether a row presents as waiting on the user: a decision wait or a
+/// Whether a row presents as waiting on the user: an ask on the user or a
 /// verification park. The removal guards and the withdraw door read this
 /// set - an ask on the user leaves by the user's own answer or approve,
 /// or by a reasoned withdraw. The fleet count and the chase's user nudge
@@ -125,7 +208,7 @@ pub(crate) fn parked_on_user(task: &Task) -> bool {
     if wait.verification {
         return task.verify == Some(Verify::User);
     }
-    wait.kind == Some(WaitingKind::Decision)
+    wait.kind == Some(WaitingKind::User)
 }
 
 /// The words a refusal names a wait by: its kind, and the row it waits on
@@ -133,7 +216,7 @@ pub(crate) fn parked_on_user(task: &Task) -> bool {
 fn wait_words(wait: Option<&Waiting>) -> String {
     let Some(wait) = wait else { return "a wait".to_owned() };
     let what = match wait.kind {
-        Some(WaitingKind::Decision) => "a decision",
+        Some(WaitingKind::User) => "a question for the user",
         Some(WaitingKind::Dependency) => "a dependency",
         Some(WaitingKind::Resource) => "a resource",
         None => "a wait",
@@ -141,6 +224,46 @@ fn wait_words(wait: Option<&Waiting>) -> String {
     match &wait.on {
         Some(id) => format!("{what} on {}", id.as_str()),
         None => what.to_owned(),
+    }
+}
+
+/// Whether the person's deferral still holds: until its time passes, or -
+/// for an activity snooze - until the row moves.
+pub(crate) fn snooze_active(wait: &Waiting, updated_at: SystemTime, now: SystemTime) -> bool {
+    let Some(snooze) = wait.snoozed.as_ref() else { return false };
+    match snooze.until {
+        forge_primitives::tasks::SnoozeUntil::At(until) => now < until,
+        forge_primitives::tasks::SnoozeUntil::Activity => updated_at <= snooze.since,
+    }
+}
+
+/// What an ask of `kind` needs back, as a refusal states it.
+fn answer_shape_need(kind: AskKind) -> String {
+    match kind {
+        AskKind::Decision => {
+            "a decision takes `choice`: one of the options the row asks about".to_owned()
+        }
+        AskKind::Clarification => {
+            "a clarification takes `text`: the fact the ask needs, in the person's words".to_owned()
+        }
+        AskKind::Exception => format!(
+            "an exception takes `disposition`: one of {}",
+            Disposition::ALL.map(Disposition::as_str).join(", "),
+        ),
+        AskKind::Teaching => {
+            "a teaching takes `text`: the lesson, which becomes the project's policy note for \
+             its class"
+                .to_owned()
+        }
+    }
+}
+
+/// An answer value as one line, for a legacy row's detail fallback.
+fn value_words(value: &AnswerValue) -> String {
+    match value {
+        AnswerValue::Choice(choice) => choice.clone(),
+        AnswerValue::Text(text) => text.clone(),
+        AnswerValue::Disposition(disposition) => disposition.as_str().to_owned(),
     }
 }
 
@@ -157,13 +280,59 @@ fn append_words(task: &mut Task, words: &str) {
         Some(if prior.trim().is_empty() { words.to_owned() } else { format!("{prior}\n{words}") });
 }
 
+/// One connector read folded onto a link's stored check: the new check and
+/// whether the answer differs from the last one. **A read that found the
+/// same state, head, CI verdict and problem again moves `at` only** - the
+/// check stays fresh, while the row's version and `changed_at` move only
+/// for news. Otherwise every live agent's versioned write would be refused
+/// every five minutes for a read that discovered nothing, and the chase's
+/// new-input signal would re-fire on a steady connector.
+fn merge_check(
+    prior: Option<&forge_primitives::tasks::LinkCheck>,
+    checked: &crate::env::git_diff::PullRequestState,
+    now: SystemTime,
+) -> (forge_primitives::tasks::LinkCheck, bool) {
+    let same = prior.is_some_and(|old| {
+        old.state == checked.state
+            && old.head == checked.head
+            && old.ci == checked.ci
+            && old.problem == checked.problem
+    });
+    (
+        forge_primitives::tasks::LinkCheck {
+            at: now,
+            changed_at: if same { prior.and_then(|old| old.changed_at) } else { Some(now) },
+            state: checked.state.clone(),
+            head: checked.head.clone(),
+            ci: checked.ci.clone(),
+            problem: checked.problem.clone(),
+        },
+        !same,
+    )
+}
+
 impl std::fmt::Display for ClaimError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => write!(f, "no such row"),
             Self::Ambiguous(candidates) => write!(f, "{}", ambiguous_words(candidates)),
             Self::OwnedByLiveSeat(label) => write!(f, "{label} holds this row"),
-            Self::NotReady => write!(f, "nothing ready to claim there"),
+            Self::Reserved => write!(
+                f,
+                "this row is reserved for the user; it is their pick to start, not a claimable row"
+            ),
+            Self::NotPending(status) => {
+                write!(f, "this row is {}; only a pending row can be claimed", status_word(*status))
+            }
+            Self::Waiting => write!(
+                f,
+                "this row is waiting on something; move it off waiting before claiming it"
+            ),
+            Self::VersionMismatch { expected, current } => write!(
+                f,
+                "the row moved since you read it: you named version {expected}, the row is at \
+                 {current}"
+            ),
             Self::AlreadyWorking => write!(f, "you already have a row in progress"),
         }
     }
@@ -228,6 +397,12 @@ impl std::fmt::Display for MoveError {
                 "\"{subject}\" is waiting on the user; the board's answer or approve settles it, \
                  and closing the epic cannot take the ask away"
             ),
+            Self::DeletingDecision(subject) => write!(
+                f,
+                "\"{subject}\" records an answered decision, and that record is the only copy; \
+                 the row cannot be deleted - cancel it if the work is over, and the record stays \
+                 readable"
+            ),
             Self::AttestLeadOnly => {
                 write!(f, "only the project lead may attest an approval; this session is a worker")
             }
@@ -238,6 +413,51 @@ impl std::fmt::Display for MoveError {
             Self::NotAttested => {
                 write!(f, "this row carries no lead attestation to reopen")
             }
+            Self::EvidenceMissing => write!(
+                f,
+                "this row names no evidence for its completion; state `evidence` with the commit \
+                 (sha) or the path the work left, so forge can check it"
+            ),
+            Self::EvidenceUnverified(reason) => write!(
+                f,
+                "the completion's evidence did not verify: {reason}. Fix the artifact or the \
+                 evidence and move the row again"
+            ),
+            Self::VersionMismatch { expected, current } => write!(
+                f,
+                "this row is at version {current} and you named {expected}: another write got \
+                 there first. Read the row again (tasks__get) and restate the change"
+            ),
+            Self::NotAnOption(choice) if choice.trim().is_empty() => {
+                write!(f, "an answer needs a choice: state the option the user picked")
+            }
+            Self::NotAnOption(choice) => write!(
+                f,
+                "\"{choice}\" is not one of the options this row asks about; answer with one of \
+                 them, or state the choice the user gave"
+            ),
+            Self::AnswerShape(need) => write!(f, "{need}"),
+            Self::PolicySettled { class, text } => write!(
+                f,
+                "\"{class}\" is settled by project policy (\"{text}\"), so this ask is not \
+                 raised again; cite the note instead"
+            ),
+            Self::BareUserWait => write!(
+                f,
+                "a wait on the user states what they answer: pass `ask` with the kind and the \
+                 question, or park a finished row on their look. A bare user wait has no door"
+            ),
+            Self::PolicyWriteFailed(class) => write!(
+                f,
+                "the project's policy note for class \"{class}\" could not be stored, so the \
+                 answer was not recorded and the row still waits. Retry once the store is \
+                 writable"
+            ),
+            Self::ArchiveUnreadable(reason) => write!(
+                f,
+                "the task archive could not be read ({reason}), so this row is unknown rather \
+                 than absent. Retry"
+            ),
         }
     }
 }
@@ -260,7 +480,7 @@ pub(crate) enum IdError {
 
 /// The rows an ambiguous id matched, as one line: each row's id and what
 /// it is, so a caller picks one without going back to the board.
-fn ambiguous_words(candidates: &[IdCandidate]) -> String {
+pub(crate) fn ambiguous_words(candidates: &[IdCandidate]) -> String {
     let named = candidates
         .iter()
         .map(|candidate| format!("{} ({})", candidate.id.as_str(), candidate.subject))
@@ -325,11 +545,6 @@ fn find_task_index(tasks: &[Task], project_name: &str, stated: &TaskId) -> Resul
                 .collect(),
         )),
     }
-}
-
-/// Whether a status is an end: nothing more happens on the row.
-fn is_terminal(status: TaskStatus) -> bool {
-    matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled)
 }
 
 /// The verify a row is bound by: the gate it was MINTED with, or none.
@@ -458,7 +673,22 @@ impl Workspace {
         by: By,
         f: impl FnOnce(&mut Task),
     ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, by, true, |task| {
+        self.update_task_at_version(project_name, id, by, None, f)
+    }
+
+    /// [`Workspace::update_task`] with the version the caller read. A
+    /// stated version the row is no longer at refuses the write, naming
+    /// both, so a lost update is visible instead of silently overwriting
+    /// another writer's work.
+    pub(crate) fn update_task_at_version(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        by: By,
+        expected_version: Option<u64>,
+        f: impl FnOnce(&mut Task),
+    ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, by, true, expected_version, |task| {
             f(task);
             Ok(())
         })
@@ -474,6 +704,7 @@ impl Workspace {
         id: &TaskId,
         by: By,
         gate: bool,
+        expected_version: Option<u64>,
         f: impl FnOnce(&mut Task) -> Result<(), MoveError>,
     ) -> Result<Option<Task>, MoveError> {
         let at = SystemTime::now();
@@ -485,6 +716,11 @@ impl Workspace {
                 Err(IdError::NotFound) => return Ok(None),
                 Err(error) => return Err(error.into()),
             };
+            if let Some(expected) = expected_version
+                && tasks[index].version != expected
+            {
+                return Err(MoveError::VersionMismatch { expected, current: tasks[index].version });
+            }
             let mut next = tasks[index].clone();
             let prior = next.status;
             f(&mut next)?;
@@ -518,6 +754,14 @@ impl Workspace {
                 next.detail.clone_from(&tasks[index].detail);
                 append_words(&mut next, &reason);
             }
+            // The evidence gate: a claim of completion rests on an artifact
+            // forge checks on this move, and a claim with nothing to check
+            // refuses. It fires before the look gate parks a verify=user
+            // row, so a park carries verified evidence for the approve
+            // that follows.
+            if next.status == TaskStatus::Completed {
+                self.verify_completion_evidence(project_name, &mut next)?;
+            }
             // A move off `waiting` drops the wait the row was holding.
             if prior == TaskStatus::Waiting && next.status != TaskStatus::Waiting {
                 next.waiting_on = None;
@@ -538,11 +782,17 @@ impl Workspace {
                     )));
                 }
                 next.waiting_on = Some(Waiting {
-                    kind: Some(WaitingKind::Decision),
+                    kind: Some(WaitingKind::User),
                     detail: None,
                     on: None,
                     verification: true,
                     parked: false,
+                    // A look carries a deadline too, and its default
+                    // escalates: a look is never approved by a timer.
+                    due: Some(default_user_deadline(at)),
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                     since: Some(at),
                 });
                 next.status = TaskStatus::Waiting;
@@ -556,7 +806,7 @@ impl Workspace {
                     .filter(|t| {
                         t.project_name == project_name
                             && t.parent.as_ref() == Some(&next.id)
-                            && !is_terminal(t.status)
+                            && !t.status.is_terminal()
                     })
                     .map(|t| t.subject.clone())
                     .collect();
@@ -602,10 +852,12 @@ impl Workspace {
                     .collect();
                 for task in &mut removed {
                     task.archived_at = Some(at);
+                    task.version = task.version.saturating_add(1);
                 }
                 tasks.retain(|t| !(t.project_name == project_name && doomed.contains(&t.id)));
             }
 
+            next.version = next.version.saturating_add(1);
             next.updated_at = at;
             if removed.is_empty() {
                 tasks[index] = next.clone();
@@ -637,11 +889,212 @@ impl Workspace {
         if prior != task.status {
             self.record_transition(project_name, &task.id, Some(prior), task.status, by);
         }
-        if is_terminal(task.status) {
+        if task.status.is_terminal() {
             self.resolve_wait_on(project_name, &task.id);
         }
         self.announce_tasks_changed(project_name);
         Ok(Some(task))
+    }
+
+    /// Check a completion's claim on the move that lands it: the artifact
+    /// must exist in the project's repository, and the row keeps the stamp
+    /// of that check. A claim naming nothing refuses, and a failed check
+    /// refuses with the reason it found.
+    pub(crate) fn verify_completion_evidence(
+        &self,
+        project_name: &str,
+        task: &mut Task,
+    ) -> Result<(), MoveError> {
+        let Some(evidence) = task.evidence.as_mut() else {
+            return Err(MoveError::EvidenceMissing);
+        };
+        let commit = evidence.commit.as_deref().map(str::trim).filter(|value| !value.is_empty());
+        let path = evidence.path.as_deref().map(str::trim).filter(|value| !value.is_empty());
+        if commit.is_none() && path.is_none() {
+            return Err(MoveError::EvidenceMissing);
+        }
+        let repo = self
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == project_name)
+            .map(|view| view.path)
+            .ok_or_else(|| {
+                MoveError::EvidenceUnverified(format!(
+                    "no project named {project_name} is loaded, so there is no repository to \
+                     check the claim against"
+                ))
+            })?;
+        let verifier = std::sync::Arc::clone(&self.evidence_verifier.read());
+        match verifier.verify(&repo, commit, path) {
+            Ok(()) => {
+                evidence.verified_at = Some(SystemTime::now());
+                evidence.problem = None;
+            }
+            Err(reason) => return Err(MoveError::EvidenceUnverified(reason)),
+        }
+        // A project that opted into a connector also waits on its pull
+        // requests: the head and CI the connector reports are the claim's
+        // other half, and a check that is stale, failed or red is not a
+        // verification. A project with no connector asks for nothing here.
+        if self.project_connector(project_name).is_some() {
+            let now = SystemTime::now();
+            for link in task.links.iter().filter(|link| link.kind == LinkKind::Pr) {
+                let fresh = link.last_check.as_ref().filter(|check| {
+                    check.problem.is_none()
+                        && now.duration_since(check.at).map_or(0, |age| age.as_secs())
+                            <= CONNECTOR_REFRESH_SECS
+                });
+                let Some(check) = fresh else {
+                    let why = link
+                        .last_check
+                        .as_ref()
+                        .and_then(|check| check.problem.clone())
+                        .unwrap_or_else(|| "it has not been checked recently".to_owned());
+                    return Err(MoveError::EvidenceUnverified(format!(
+                        "the project's connector cannot vouch for {}: {why}. It refreshes every \
+                         five minutes; check the link and move the row again",
+                        link.target,
+                    )));
+                };
+                // Absence is never success: a pull request whose CI state
+                // is unknown or not yet green cannot vouch for a completion.
+                match check.ci.as_deref() {
+                    Some("passing") => {}
+                    Some("failing") => {
+                        return Err(MoveError::EvidenceUnverified(format!(
+                            "{} reports failing CI; a red pull request does not complete a row",
+                            link.target,
+                        )));
+                    }
+                    Some(elsewhere) => {
+                        return Err(MoveError::EvidenceUnverified(format!(
+                            "{} reports CI {elsewhere}; a pull request whose CI has not passed \
+                             does not complete a row",
+                            link.target,
+                        )));
+                    }
+                    None => {
+                        return Err(MoveError::EvidenceUnverified(format!(
+                            "{} reports no CI verdict; an absent check is never a pass, so the \
+                             pull request cannot vouch for this completion",
+                            link.target,
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A project's outward connector, when it opted into one. The
+    /// test-only project overlay is read too, the way `list_projects`
+    /// reads it, so a test can seed an opted-in project.
+    fn project_connector(&self, project_name: &str) -> Option<crate::config::ConnectorKind> {
+        let config = self.config_arc();
+        if let Some(connector) = config
+            .projects
+            .iter()
+            .find(|project| project.name == project_name)
+            .and_then(|project| project.connector)
+        {
+            return Some(connector);
+        }
+        #[cfg(any(test, feature = "testing"))]
+        {
+            return self
+                .test_extra_projects
+                .lock()
+                .iter()
+                .find(|project| project.name == project_name)
+                .and_then(|project| project.connector);
+        }
+        #[cfg(not(any(test, feature = "testing")))]
+        None
+    }
+
+    /// Refresh every opted-in project's pull-request links through its
+    /// connector, caching each check on the link with its timestamp.
+    ///
+    /// A project with no connector contributes nothing: no link is looked
+    /// at and no child is spawned, which is what keeps the default board
+    /// self-contained. Refreshes land on the row as a versioned write;
+    /// `updated_at` is left alone, because a connector's read is not
+    /// someone touching the row.
+    pub async fn refresh_connectors(&self, now: SystemTime) {
+        // The project list is taken and every lock released before the
+        // first await: a guard held across a spawn would keep this future
+        // off the supervisor's Send bound.
+        let opted_in: Vec<(String, std::path::PathBuf, std::collections::HashMap<String, String>)> = {
+            let config = self.config_arc();
+            #[cfg(any(test, feature = "testing"))]
+            let extra = self.test_extra_projects.lock();
+            let projects: Box<dyn Iterator<Item = &crate::config::LoadedProject>> = {
+                #[cfg(any(test, feature = "testing"))]
+                {
+                    Box::new(config.projects.iter().chain(extra.iter()))
+                }
+                #[cfg(not(any(test, feature = "testing")))]
+                {
+                    Box::new(config.projects.iter())
+                }
+            };
+            projects
+                .filter(|project| project.connector.is_some())
+                .map(|project| (project.name.clone(), project.path.clone(), project.env.clone()))
+                .collect()
+        };
+        for (project, path, env) in opted_in {
+            let mut announced = false;
+            for task in self.tasks_for_project(&project) {
+                if task.status.is_terminal() {
+                    continue;
+                }
+                let mut links = task.links.clone();
+                let mut refreshed = false;
+                let mut changed = false;
+                for link in links.iter_mut().filter(|link| link.kind == LinkKind::Pr) {
+                    let fresh = link.last_check.as_ref().is_some_and(|check| {
+                        now.duration_since(check.at).map_or(0, |age| age.as_secs())
+                            <= CONNECTOR_REFRESH_SECS
+                    });
+                    if fresh {
+                        continue;
+                    }
+                    let checked =
+                        crate::env::git_diff::check_pull_request(&path, &env, &link.target).await;
+                    let (check, differs) = merge_check(link.last_check.as_ref(), &checked, now);
+                    link.state.clone_from(&checked.state);
+                    link.last_check = Some(check);
+                    refreshed = true;
+                    if differs {
+                        changed = true;
+                    }
+                }
+                if !refreshed {
+                    continue;
+                }
+                let id = task.id.clone();
+                let project_name = project.clone();
+                self.with_tasks_mut(|tasks| {
+                    if let Some(stored) = tasks
+                        .iter_mut()
+                        .find(|stored| stored.id == id && stored.project_name == project_name)
+                    {
+                        stored.links = links;
+                        if changed {
+                            stored.version = stored.version.saturating_add(1);
+                        }
+                        self.persist_task(stored);
+                    }
+                });
+                if changed {
+                    announced = true;
+                }
+            }
+            if announced {
+                self.announce_tasks_changed(&project);
+            }
+        }
     }
 
     /// The user moves a row's state directly - the drag across the board.
@@ -665,12 +1118,27 @@ impl Workspace {
     /// the look's to clear (a decision is the user's to answer), and the
     /// quoted evidence is required. The row completes as the user's own
     /// approve would, wearing the attestation the board draws.
+    /// The unversioned door the tests drive; every production caller names
+    /// the version it read.
+    #[cfg(test)]
     pub(crate) fn attest_task(
         &self,
         project_name: &str,
         id: &TaskId,
         slot: &SessionSlot,
         evidence: &str,
+    ) -> Result<Option<Task>, MoveError> {
+        self.attest_task_at_version(project_name, id, slot, evidence, None)
+    }
+
+    /// `Workspace::attest_task` with the version the caller read.
+    pub(crate) fn attest_task_at_version(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        evidence: &str,
+        expected: Option<u64>,
     ) -> Result<Option<Task>, MoveError> {
         if slot.label() != crate::LEAD_LABEL {
             return Err(MoveError::AttestLeadOnly);
@@ -680,7 +1148,7 @@ impl Workspace {
             return Err(MoveError::AttestNeedsEvidence);
         }
         let at = SystemTime::now();
-        self.move_task(project_name, id, By::Seat(slot.clone()), false, |task| {
+        self.move_task(project_name, id, By::Seat(slot.clone()), false, expected, |task| {
             if task.status != TaskStatus::Waiting || !parked_on_look(task) {
                 return Err(MoveError::NotWaitingVerification);
             }
@@ -714,24 +1182,175 @@ impl Workspace {
         id: &TaskId,
     ) -> Result<Option<Task>, MoveError> {
         let at = SystemTime::now();
-        self.move_task(project_name, id, By::User, false, |task| {
+        self.move_task(project_name, id, By::User, false, None, |task| {
             if task.attested.is_none() {
                 return Err(MoveError::NotAttested);
             }
             task.attested = None;
             task.verify = Some(Verify::User);
             task.waiting_on = Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: None,
                 on: None,
                 verification: true,
                 parked: false,
+                due: Some(default_user_deadline(at)),
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: Some(at),
             });
             task.status = TaskStatus::Waiting;
             append_words(task, "Reopened by the user: the look is owed again.");
             Ok(())
         })
+    }
+
+    /// The person marked the ask seen without answering it: the acknowledged
+    /// state is theirs, distinct from an answer, and the drive re-raises it
+    /// if it stands unresolved too long.
+    pub(crate) fn acknowledge_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+    ) -> Result<Option<Task>, MoveError> {
+        let at = SystemTime::now();
+        self.move_task(project_name, id, By::User, false, None, |task| {
+            let on_user =
+                task.waiting_on.as_ref().is_some_and(|wait| wait.kind == Some(WaitingKind::User));
+            if task.status != TaskStatus::Waiting || !on_user {
+                return Err(MoveError::NotWaitingQuestion);
+            }
+            if let Some(wait) = task.waiting_on.as_mut() {
+                wait.acknowledged_at = Some(at);
+            }
+            Ok(())
+        })
+    }
+
+    /// The person deferred the ask: until a time they named, or until the
+    /// row sees new activity. A snoozed ask is quiet on the board's chase
+    /// and the drive's escalation, and it keeps its record either way.
+    pub(crate) fn snooze_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        until: forge_primitives::tasks::SnoozeUntil,
+    ) -> Result<Option<Task>, MoveError> {
+        let at = SystemTime::now();
+        // One clock value for the stamp and the row's touch: the snooze's
+        // own write must not read as the activity that ends it.
+        let outcome = self.with_tasks_mut(|tasks| {
+            let index = match find_task_index(tasks, project_name, id) {
+                Ok(index) => index,
+                Err(IdError::NotFound) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            let on_user = tasks[index]
+                .waiting_on
+                .as_ref()
+                .is_some_and(|wait| wait.kind == Some(WaitingKind::User));
+            if tasks[index].status != TaskStatus::Waiting || !on_user {
+                return Err(MoveError::NotWaitingQuestion);
+            }
+            if let Some(wait) = tasks[index].waiting_on.as_mut() {
+                wait.snoozed = Some(forge_primitives::tasks::Snooze { until, since: at });
+            }
+            tasks[index].version = tasks[index].version.saturating_add(1);
+            tasks[index].updated_at = at;
+            self.persist_task(&tasks[index]);
+            Ok(Some(tasks[index].clone()))
+        })?;
+        if outcome.is_some() {
+            self.announce_tasks_changed(project_name);
+        }
+        Ok(outcome)
+    }
+
+    /// Run an ask's expiry default: the row ends canceled with the reason,
+    /// and the ask's own record - the wait with `expired_at` and the
+    /// request - stays on the row, because the archive keeps the only copy
+    /// of what was asked.
+    pub(crate) fn expire_ask(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        now: SystemTime,
+        reason: &str,
+    ) -> Option<Task> {
+        let outcome = self.with_tasks_mut(|tasks| {
+            let index = tasks
+                .iter()
+                .position(|task| task.project_name == project_name && task.id == *id)?;
+            let prior = tasks[index].status;
+            let task = &mut tasks[index];
+            if let Some(wait) = task.waiting_on.as_mut() {
+                wait.expired_at = Some(now);
+            }
+            append_words(task, reason);
+            task.status = TaskStatus::Canceled;
+            task.version = task.version.saturating_add(1);
+            task.updated_at = now;
+            self.persist_task(task);
+            Some((task.clone(), prior))
+        })?;
+        let (task, prior) = outcome;
+        self.record_transition(project_name, &task.id, Some(prior), task.status, By::System);
+        self.announce_tasks_changed(project_name);
+        Some(task)
+    }
+
+    /// Re-arm an ask's deadline one period out (the `reask` default).
+    pub(crate) fn rearm_ask(&self, project_name: &str, id: &TaskId, next_at: SystemTime) -> bool {
+        let changed = self.with_tasks_mut(|tasks| {
+            let Some(task) =
+                tasks.iter_mut().find(|task| task.project_name == project_name && task.id == *id)
+            else {
+                return false;
+            };
+            let Some(due) = task.waiting_on.as_mut().and_then(|wait| wait.due.as_mut()) else {
+                return false;
+            };
+            due.at = next_at;
+            due.ran_at = None;
+            task.version = task.version.saturating_add(1);
+            self.persist_task(task);
+            true
+        });
+        // A client drawing `due at X` must hear the new deadline.
+        if changed {
+            self.announce_tasks_changed(project_name);
+        }
+        changed
+    }
+
+    /// Record that an ask's deadline default ran (the `escalate` default,
+    /// which keeps the ask waiting).
+    pub(crate) fn mark_ask_default_ran(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        now: SystemTime,
+    ) -> bool {
+        let changed = self.with_tasks_mut(|tasks| {
+            let Some(task) =
+                tasks.iter_mut().find(|task| task.project_name == project_name && task.id == *id)
+            else {
+                return false;
+            };
+            let Some(due) = task.waiting_on.as_mut().and_then(|wait| wait.due.as_mut()) else {
+                return false;
+            };
+            due.ran_at = Some(now);
+            task.version = task.version.saturating_add(1);
+            self.persist_task(task);
+            true
+        });
+        // The deadline moved to `ran`: a client drawing it must hear that.
+        if changed {
+            self.announce_tasks_changed(project_name);
+        }
+        changed
     }
 
     /// The user's approval of a row waiting on their look: the wait
@@ -742,7 +1361,7 @@ impl Workspace {
         project_name: &str,
         id: &TaskId,
     ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, By::User, false, |task| {
+        self.move_task(project_name, id, By::User, false, None, |task| {
             if task.status != TaskStatus::Waiting
                 || !task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
             {
@@ -756,14 +1375,15 @@ impl Workspace {
     }
 
     /// The user sends a verified row back: it returns to its owner in
-    /// progress, the words land in the detail, and the attempt ticks.
+    /// progress, and the words land in the detail - the reason a row was
+    /// sent back is the record, not a counter.
     pub(crate) fn send_back_task(
         &self,
         project_name: &str,
         id: &TaskId,
         words: &str,
     ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, By::User, false, |task| {
+        self.move_task(project_name, id, By::User, false, None, |task| {
             if task.status != TaskStatus::Waiting
                 || !task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
             {
@@ -771,31 +1391,369 @@ impl Workspace {
             }
             task.waiting_on = None;
             task.status = TaskStatus::InProgress;
-            task.attempt += 1;
             append_words(task, words);
             Ok(())
         })
     }
 
-    /// The user answers a row waiting on a question: the row resumes in
-    /// progress with the words in its detail.
-    pub(crate) fn answer_task(
+    /// Answer a row waiting on an ask: the value the kind needed, when, and
+    /// the note the person left. The record is the row's own and nothing
+    /// else is written to it; the row resumes in progress. A teaching's
+    /// answer also writes the project policy note its class is settled by.
+    pub(crate) fn answer_decision(
         &self,
         project_name: &str,
         id: &TaskId,
-        words: &str,
+        by: By,
+        value: AnswerValue,
+        note: Option<&str>,
+        lesson: Option<&str>,
     ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, By::User, false, |task| {
-            if task.status != TaskStatus::Waiting
-                || task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
-            {
+        self.answer_decision_at_version(project_name, id, by, value, note, lesson, None)
+    }
+
+    /// `Workspace::answer_decision` with the version the caller read.
+    pub(crate) fn answer_decision_at_version(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        by: By,
+        value: AnswerValue,
+        note: Option<&str>,
+        lesson: Option<&str>,
+        expected: Option<u64>,
+    ) -> Result<Option<Task>, MoveError> {
+        let at = SystemTime::now();
+        let lesson = lesson.map(str::trim).filter(|lesson| !lesson.is_empty());
+        let moved = self.move_task(project_name, id, by, false, expected, |task| {
+            // An answer is the ask's own door: a resource or dependency
+            // wait is resumed by an update, not by recording a value
+            // nobody asked for.
+            let on_user = task
+                .waiting_on
+                .as_ref()
+                .is_some_and(|wait| !wait.verification && wait.kind == Some(WaitingKind::User));
+            if task.status != TaskStatus::Waiting || !on_user {
                 return Err(MoveError::NotWaitingQuestion);
+            }
+            match task.request.as_mut() {
+                Some(request) => {
+                    // A decision's choice is named against its own options
+                    // first, so the refusal quotes the value the person gave
+                    // rather than only the kind's shape.
+                    if let (AskKind::Decision, AnswerValue::Choice(choice)) = (request.kind, &value)
+                        && !request.options.is_empty()
+                        && !request.options.iter().any(|option| option == choice)
+                    {
+                        return Err(MoveError::NotAnOption(choice.clone()));
+                    }
+                    // **The value must be the shape the kind needs**: an
+                    // option list cannot answer a clarification, and a
+                    // teaching without its lesson writes no policy. A
+                    // teaching whose `text` arrived but whose `lesson` did
+                    // not hears the lesson named, not the text it already
+                    // gave.
+                    if !request.answer_fits(&value, lesson) {
+                        let need = if request.kind == AskKind::Teaching && lesson.is_none() {
+                            "a teaching takes `lesson` as well as `text`: the lesson is the \
+                             policy note its class is settled by"
+                                .to_owned()
+                        } else {
+                            answer_shape_need(request.kind)
+                        };
+                        return Err(MoveError::AnswerShape(need));
+                    }
+                    // **A teaching's policy note lands before the row
+                    // resumes**, so an answer that reports success has its
+                    // note stored rather than only logged.
+                    if request.kind == AskKind::Teaching
+                        && let (Some(class), Some(lesson)) = (request.class.as_deref(), lesson)
+                        && self.settle_policy(project_name, class, lesson, &task.id).is_none()
+                    {
+                        return Err(MoveError::PolicyWriteFailed(class.to_owned()));
+                    }
+                    // The record is the answer and nothing more: the value
+                    // the kind returned, when, and the note. A second
+                    // answer to the same ask is refused by the wait check
+                    // above, because answering resumes the row.
+                    request.answer = Some(Answer {
+                        value,
+                        note: note
+                            .map(str::trim)
+                            .filter(|note| !note.is_empty())
+                            .map(str::to_owned),
+                        lesson: lesson.map(str::to_owned),
+                        at,
+                    });
+                }
+                // A row written before the record: the words are the
+                // answer, and they land in the detail as they always did.
+                None => append_words(task, &value_words(&value)),
             }
             task.waiting_on = None;
             task.status = TaskStatus::InProgress;
-            append_words(task, words);
             Ok(())
-        })
+        })?;
+        Ok(moved)
+    }
+
+    /// Stamp `project`'s board as looked at - the window's opening, or the
+    /// person answering an ask. Server-side so every client agrees.
+    pub(crate) fn record_board_seen(&self, project_name: &str, at: SystemTime) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::board_seen::record(db, project_name, at) {
+            tracing::error!(
+                target: "forge_workspace::tasks",
+                event_name = "board_seen_write_failed",
+                project = %project_name,
+                %error,
+                "recording the board's last-look stamp failed",
+            );
+        }
+    }
+
+    /// When `project`'s board was last looked at.
+    pub fn last_board_seen(&self, project_name: &str) -> Option<SystemTime> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        match crate::store::board_seen::last_seen(db, project_name) {
+            Ok(seen) => seen,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "board_seen_read_failed",
+                    project = %project_name,
+                    %error,
+                    "reading the board's last-look stamp failed; the digest reads as unread",
+                );
+                None
+            }
+        }
+    }
+
+    /// What changed on `project`'s board since `since`: rows that moved,
+    /// rows that ended, asks that expired, and linked pull requests merged.
+    /// The window's digest strip is one line each of these counts.
+    pub fn board_delta(
+        &self,
+        project_name: &str,
+        since: Option<SystemTime>,
+    ) -> crate::board::BoardDelta {
+        use crate::board::DeltaItem;
+        let since = since.unwrap_or(SystemTime::UNIX_EPOCH);
+        let mut tasks = self.tasks_for_project(project_name);
+        // **A row the store archived is still a row that moved.** A tree
+        // close archives its rows at once and retention takes the rest, so a
+        // digest that read only the live set would report a finished epic as
+        // nothing at all - the very absence the strip exists to disprove.
+        let mut refused = None;
+        match self.archived_tasks_for_project_checked(project_name) {
+            Ok(archived) => {
+                for task in archived {
+                    if !tasks.iter().any(|live| live.id == task.id) {
+                        tasks.push(task);
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::tasks",
+                    event_name = "board_delta_archive_read_failed",
+                    project = %project_name,
+                    %error,
+                    "the archive could not be read; the digest counts the live rows only",
+                );
+                refused =
+                    Some("the archive could not be read; the counts are live rows only".to_owned());
+            }
+        }
+        let history = {
+            let guard = self.db.lock();
+            guard.as_ref().map_or_else(Vec::new, |db| {
+                crate::store::task_history::list_for_project(db, project_name).unwrap_or_default()
+            })
+        };
+        let after = |at: SystemTime| at > since;
+        let find = |id: &TaskId| tasks.iter().find(|task| task.id == *id);
+        // **One item per row**, newest first: the line that counts a move
+        // opens onto the rows it counts, not onto every transition.
+        let mut moved: Vec<DeltaItem> = Vec::new();
+        let mut landed: Vec<DeltaItem> = Vec::new();
+        let mut moved_seen: HashSet<TaskId> = HashSet::new();
+        let mut landed_seen: HashSet<TaskId> = HashSet::new();
+        for step in history.iter().rev().filter(|step| after(step.at)) {
+            let Some(task) = find(&step.task_id) else { continue };
+            if step.to.is_terminal() {
+                if landed_seen.insert(step.task_id.clone()) {
+                    landed.push(DeltaItem {
+                        id: Some(step.task_id.as_str().to_owned()),
+                        subject: task.subject.clone(),
+                        word: status_word(step.to).to_owned(),
+                        at: step.at,
+                    });
+                }
+                continue;
+            }
+            if !moved_seen.insert(step.task_id.clone()) {
+                continue;
+            }
+            // A resumed ask carries its answer: a resolved one draws as
+            // answered, with the value it returned.
+            let answered = task
+                .request
+                .as_ref()
+                .and_then(|request| request.answer.as_ref())
+                .filter(|answer| after(answer.at));
+            let word = match answered {
+                Some(answer) => format!("answered: {}", value_words(&answer.value)),
+                None => format!("moved to {}", status_word(step.to)),
+            };
+            moved.push(DeltaItem {
+                id: Some(step.task_id.as_str().to_owned()),
+                subject: task.subject.clone(),
+                word,
+                at: step.at,
+            });
+        }
+        // The asks whose deadline ended them keep their record and draw as
+        // expired, never as a canceled row only.
+        let expired: Vec<DeltaItem> = tasks
+            .iter()
+            .filter_map(|task| {
+                let at = task
+                    .waiting_on
+                    .as_ref()
+                    .and_then(|wait| wait.expired_at)
+                    .filter(|at| after(*at))?;
+                Some(DeltaItem {
+                    id: Some(task.id.as_str().to_owned()),
+                    subject: task.subject.clone(),
+                    word: "expired: no answer by its deadline, and its record stays".to_owned(),
+                    at,
+                })
+            })
+            .collect();
+        let merged: Vec<DeltaItem> = tasks
+            .iter()
+            .flat_map(|task| task.links.iter().map(move |link| (task, link)))
+            .filter(|(_, link)| {
+                link.kind == LinkKind::Pr && link.state.as_deref() == Some("merged")
+            })
+            .filter_map(|(task, link)| {
+                let at = link
+                    .last_check
+                    .as_ref()
+                    .and_then(|check| check.changed_at)
+                    .filter(|at| after(*at))?;
+                Some(DeltaItem {
+                    id: Some(task.id.as_str().to_owned()),
+                    subject: task.subject.clone(),
+                    word: format!("{} merged", link.label.as_deref().unwrap_or(&link.target)),
+                    at,
+                })
+            })
+            .collect();
+        crate::board::BoardDelta {
+            moved: moved.len(),
+            landed: landed.len(),
+            expired: expired.len(),
+            merged: merged.len(),
+            moved_items: moved,
+            landed_items: landed,
+            expired_items: expired,
+            merged_items: merged,
+            refused,
+        }
+    }
+
+    /// Whether a policy note settles `class` for `project`.
+    pub(crate) fn policy_settles(&self, project_name: &str, class: &str) -> bool {
+        self.policy_note(project_name, class).is_some()
+    }
+
+    /// The note `project` holds for `class`, when it has settled one.
+    fn policy_note(
+        &self,
+        project_name: &str,
+        class: &str,
+    ) -> Option<crate::store::policy::PolicyNote> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        match crate::store::policy::get_for_class(db, project_name, class) {
+            Ok(note) => note,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "policy_read_failed",
+                    project = %project_name,
+                    class = %class,
+                    %error,
+                    "reading a project's policy note failed; the class reads as unsettled",
+                );
+                None
+            }
+        }
+    }
+
+    /// Write the policy note that settles `class` - a teaching's answer, or
+    /// the lead's own `tasks__policy` write - and return it. A missing or
+    /// failed store answers `None`, and the teaching's answer door refuses
+    /// on it: a success that left the lesson on nothing is not one.
+    pub(crate) fn settle_policy(
+        &self,
+        project_name: &str,
+        class: &str,
+        text: &str,
+        source_task: &TaskId,
+    ) -> Option<crate::store::policy::PolicyNote> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        let note = crate::store::policy::PolicyNote {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_name: project_name.to_owned(),
+            class: class.to_owned(),
+            text: text.to_owned(),
+            source_task: source_task.as_str().to_owned(),
+            at: SystemTime::now(),
+        };
+        match crate::store::policy::append(db, &note) {
+            Ok(()) => Some(note),
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "policy_write_failed",
+                    project = %project_name,
+                    class = %class,
+                    %error,
+                    "writing the policy note failed; the teaching's answer is refused rather \
+                     than stored without its note",
+                );
+                None
+            }
+        }
+    }
+
+    /// `project`'s settled policy notes, by class.
+    pub(crate) fn policy_notes_for_project(
+        &self,
+        project_name: &str,
+    ) -> Vec<crate::store::policy::PolicyNote> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return Vec::new() };
+        match crate::store::policy::list_for_project(db, project_name) {
+            Ok(notes) => notes,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "policy_read_failed",
+                    project = %project_name,
+                    %error,
+                    "reading a project's policy notes failed; the set reads as empty",
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Move a row in its queue: `Top` above everything, `Up` and `Down`
@@ -841,6 +1799,7 @@ impl Workspace {
             queue.insert(target, moved);
             for (rank, i) in queue.iter().enumerate() {
                 tasks[*i].rank = Some(i64::try_from(rank).unwrap_or(i64::MAX));
+                tasks[*i].version = tasks[*i].version.saturating_add(1);
             }
             tasks[index].updated_at = at;
             // The queue was renumbered: one write per row it holds.
@@ -865,7 +1824,7 @@ impl Workspace {
         owner: Option<SessionSlot>,
     ) -> Result<Option<(Task, Option<SessionSlot>)>, MoveError> {
         let mut prior = None;
-        let moved = self.move_task(project_name, id, By::User, false, |task| {
+        let moved = self.move_task(project_name, id, By::User, false, None, |task| {
             prior.clone_from(&task.owner);
             task.owner = owner;
             Ok(())
@@ -873,17 +1832,30 @@ impl Workspace {
         Ok(moved.map(|task| (task, prior)))
     }
 
-    /// Claim the top of a queue: the row `by_id`, or the first ready row
-    /// of `in_epic` by rank. Owner and in_progress land in one write, the
-    /// attempt ticks, and the claim is refused - by name - for a row a
-    /// live seat holds, a row that is waiting, or a caller already
-    /// working another row.
+    /// Claim a row by id: owner and in_progress land in one write, and the
+    /// claim is refused - by name - for a row a live seat holds, a row
+    /// that is not ready (pending, nothing waiting on it, not reserved),
+    /// or a caller already working another row. Epics are unchanged: a
+    /// claim names the row it wants.
+    /// The unversioned door the tests drive; every production caller names
+    /// the version it read.
+    #[cfg(test)]
     pub(crate) fn claim_task(
         &self,
         project_name: &str,
         slot: &SessionSlot,
-        by_id: Option<&TaskId>,
-        in_epic: Option<&TaskId>,
+        id: &TaskId,
+    ) -> Result<Task, ClaimError> {
+        self.claim_task_at_version(project_name, slot, id, None)
+    }
+
+    /// `Workspace::claim_task` with the version the caller read.
+    pub(crate) fn claim_task_at_version(
+        &self,
+        project_name: &str,
+        slot: &SessionSlot,
+        id: &TaskId,
+        expected: Option<u64>,
     ) -> Result<Task, ClaimError> {
         let outcome = self.with_tasks_mut(|tasks| {
             let already = tasks.iter().any(|t| {
@@ -894,35 +1866,26 @@ impl Workspace {
             if already {
                 return Err(ClaimError::AlreadyWorking);
             }
-            let index = match (by_id, in_epic) {
-                (Some(id), _) => find_task_index(tasks, project_name, id)?,
-                (None, Some(epic)) => {
-                    let epic = tasks[find_task_index(tasks, project_name, epic)?].id.clone();
-                    let mut ready: Vec<usize> = tasks
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, t)| {
-                            t.project_name == project_name
-                                && t.parent.as_ref() == Some(&epic)
-                                && t.status == TaskStatus::Pending
-                                && t.waiting_on.is_none()
-                                && t.owner.is_none()
-                                && t.reserved.is_none()
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                    ready.sort_by_key(|i| {
-                        (tasks[*i].rank.unwrap_or(i64::MAX), tasks[*i].created_at)
-                    });
-                    ready.first().copied().ok_or(ClaimError::NotReady)?
-                }
-                (None, None) => return Err(ClaimError::NotReady),
-            };
-            let status = tasks[index].status;
-            let waiting = tasks[index].waiting_on.is_some();
-            let reserved = tasks[index].reserved.is_some();
-            if status != TaskStatus::Pending || waiting || reserved {
-                return Err(ClaimError::NotReady);
+            let index = find_task_index(tasks, project_name, id)?;
+            if let Some(expected) = expected
+                && tasks[index].version != expected
+            {
+                return Err(ClaimError::VersionMismatch {
+                    expected,
+                    current: tasks[index].version,
+                });
+            }
+            // The three ways a row can be unclaimable are named apart: a
+            // reserved pick is the user's, a row in another state is not
+            // startable, and a waiting row is already in play.
+            if tasks[index].reserved.is_some() {
+                return Err(ClaimError::Reserved);
+            }
+            if tasks[index].waiting_on.is_some() {
+                return Err(ClaimError::Waiting);
+            }
+            if !tasks[index].is_ready() {
+                return Err(ClaimError::NotPending(tasks[index].status));
             }
             let holder = tasks[index].owner.clone();
             if let Some(holder) = holder
@@ -934,7 +1897,7 @@ impl Workspace {
             let prior = tasks[index].status;
             tasks[index].owner = Some(slot.clone());
             tasks[index].status = TaskStatus::InProgress;
-            tasks[index].attempt += 1;
+            tasks[index].version = tasks[index].version.saturating_add(1);
             tasks[index].updated_at = SystemTime::now();
             self.persist_task(&tasks[index]);
             Ok((tasks[index].clone(), prior))
@@ -952,6 +1915,9 @@ impl Workspace {
     }
 
     /// Put a row the caller owns into `waiting`, stating what it waits on.
+    /// The unversioned door the tests drive; every production caller names
+    /// the version it read.
+    #[cfg(test)]
     pub(crate) fn wait_task(
         &self,
         project_name: &str,
@@ -961,9 +1927,99 @@ impl Workspace {
         detail: Option<String>,
         on: Option<&TaskId>,
     ) -> Result<Task, MoveError> {
+        self.wait_task_recording(project_name, id, slot, kind, detail, on, None, None, None)
+    }
+
+    /// `Workspace::wait_task` with the version the caller read.
+    pub(crate) fn wait_task_at_version(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+        expected: Option<u64>,
+    ) -> Result<Task, MoveError> {
+        self.wait_task_recording(project_name, id, slot, kind, detail, on, None, None, expected)
+    }
+
+    /// `Workspace::wait_request_task_at_version` for a decision, without a
+    /// version: the unversioned door the tests drive.
+    #[cfg(test)]
+    pub(crate) fn wait_decision_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        detail: Option<String>,
+        question: String,
+        options: Vec<String>,
+    ) -> Result<Task, MoveError> {
+        self.wait_request_task_at_version(
+            project_name,
+            id,
+            slot,
+            detail,
+            Request { kind: AskKind::Decision, question, options, class: None, answer: None },
+            None,
+            None,
+        )
+    }
+
+    /// The ask door for any kind on the person: the request record the
+    /// facade built, and the deadline that runs if it is ignored.
+    pub(crate) fn wait_request_task_at_version(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        detail: Option<String>,
+        request: Request,
+        due: Option<Deadline>,
+        expected: Option<u64>,
+    ) -> Result<Task, MoveError> {
+        // **A settled class is not asked again.** The policy note that
+        // settles it is quoted, so the asker reads the answer it already
+        // has rather than re-raising the class.
+        if let Some(class) = request.class.as_deref()
+            && let Some(note) = self.policy_note(project_name, class)
+        {
+            return Err(MoveError::PolicySettled { class: class.to_owned(), text: note.text });
+        }
+        self.wait_task_recording(
+            project_name,
+            id,
+            slot,
+            WaitingKind::User,
+            detail,
+            None,
+            Some(request),
+            due,
+            expected,
+        )
+    }
+
+    fn wait_task_recording(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+        request: Option<Request>,
+        due: Option<Deadline>,
+        expected: Option<u64>,
+    ) -> Result<Task, MoveError> {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
             let index = find_task_index(tasks, project_name, id)?;
+            if let Some(expected) = expected
+                && tasks[index].version != expected
+            {
+                return Err(MoveError::VersionMismatch { expected, current: tasks[index].version });
+            }
             let owner = tasks[index].owner.as_ref().map(SessionSlot::label).map(str::to_owned);
             if owner.as_deref() != Some(slot.label()) {
                 return Err(MoveError::NotOwner);
@@ -977,6 +2033,12 @@ impl Workspace {
                 }
                 None => None,
             };
+            // **Every park on the user is an ask or a look.** A bare `user`
+            // wait has nothing to answer and no approve door; looks are
+            // minted by their own park paths, never through this door.
+            if kind == WaitingKind::User && request.is_none() {
+                return Err(MoveError::BareUserWait);
+            }
             let prior = tasks[index].status;
             // **A repeated identical wait is the same wait**: keep its start,
             // so its age and a notification's identity do not move under a
@@ -986,6 +2048,8 @@ impl Workspace {
                     && wait.detail.as_deref() == detail.as_deref()
                     && wait.on.as_ref() == on.as_ref()
                     && !wait.verification
+                    && request.as_ref().map(|r| (r.kind, r.question.as_str()))
+                        == tasks[index].request.as_ref().map(|r| (r.kind, r.question.as_str()))
             });
             let since = same.and_then(|wait| wait.since).unwrap_or(at);
             tasks[index].waiting_on = Some(Waiting {
@@ -994,9 +2058,21 @@ impl Workspace {
                 on,
                 verification: false,
                 parked: false,
+                // Every item carries a deadline: one the asker named, else
+                // the escalate default.
+                due: due.or_else(|| (kind == WaitingKind::User).then(|| default_user_deadline(at))),
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: Some(since),
             });
+            if let Some(request) = request {
+                // A new ask replaces the last one: the record is the ask in
+                // front of the person, not a history of asks.
+                tasks[index].request = Some(request);
+            }
             tasks[index].status = TaskStatus::Waiting;
+            tasks[index].version = tasks[index].version.saturating_add(1);
             tasks[index].updated_at = at;
             self.persist_task(&tasks[index]);
             Ok((tasks[index].clone(), prior))
@@ -1013,6 +2089,45 @@ impl Workspace {
         }
         self.announce_tasks_changed(project_name);
         Ok(task)
+    }
+
+    /// Park an overrun row waiting on its owner: the chase's re-plan ask is a
+    /// state the board draws, not a message alone. A row already off
+    /// `in_progress` is left alone - the owner got there first.
+    pub(crate) fn park_overrun(&self, project_name: &str, id: &TaskId) -> Option<Task> {
+        let at = SystemTime::now();
+        let outcome = self.with_tasks_mut(|tasks| {
+            let index = tasks
+                .iter()
+                .position(|task| task.project_name == project_name && task.id == *id)?;
+            if tasks[index].status != TaskStatus::InProgress {
+                return None;
+            }
+            tasks[index].waiting_on = Some(Waiting {
+                kind: Some(WaitingKind::Resource),
+                detail: Some(
+                    "over its estimate: re-plan it - rescope, split, or close it with the reason"
+                        .to_owned(),
+                ),
+                on: None,
+                verification: false,
+                parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
+                since: Some(at),
+            });
+            tasks[index].status = TaskStatus::Waiting;
+            tasks[index].version = tasks[index].version.saturating_add(1);
+            tasks[index].updated_at = at;
+            self.persist_task(&tasks[index]);
+            Some(tasks[index].clone())
+        });
+        if outcome.is_some() {
+            self.announce_tasks_changed(project_name);
+        }
+        outcome
     }
 
     /// Clear every wait on `blocker` - any terminal end of it counts, and
@@ -1032,6 +2147,7 @@ impl Workspace {
                 }
                 task.waiting_on = None;
                 task.status = TaskStatus::Pending;
+                task.version = task.version.saturating_add(1);
                 task.updated_at = SystemTime::now();
                 released.push(task.clone());
             }
@@ -1109,12 +2225,38 @@ impl Workspace {
     /// that row by deletion, an ask the update path refuses to unbind,
     /// complete, or drop without a reason. The check walks the whole
     /// cascade, so deleting the epic above the row is no way around it.
+    /// The unversioned door the tests drive; every production caller names
+    /// the version it read.
+    #[cfg(test)]
     pub(crate) fn remove_task_tree(
         &self,
         project_name: &str,
         id: &TaskId,
     ) -> Result<Vec<Task>, MoveError> {
+        self.remove_task_tree_at_version(project_name, id, None)
+    }
+
+    /// `Workspace::remove_task_tree` with the version the caller read.
+    pub(crate) fn remove_task_tree_at_version(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        expected: Option<u64>,
+    ) -> Result<Vec<Task>, MoveError> {
         let removed = self.with_tasks_mut(|tasks| {
+            if let Some(expected) = expected {
+                // A delete is a write like any other: it names the version
+                // it read, so a row another writer moved is not removed
+                // under their feet.
+                let Some(task) =
+                    tasks.iter().find(|task| task.project_name == project_name && task.id == *id)
+                else {
+                    return Ok(Vec::new());
+                };
+                if task.version != expected {
+                    return Err(MoveError::VersionMismatch { expected, current: task.version });
+                }
+            }
             let mut doomed = vec![id.clone()];
             let mut cursor = 0;
             while cursor < doomed.len() {
@@ -1135,6 +2277,16 @@ impl Workspace {
                     && parked_on_user(task)
             }) {
                 return Err(MoveError::DeletingLook(task.subject.clone()));
+            }
+            // An ANSWERED decision is the record of what was asked and what
+            // was chosen (#3031): the row is the only copy, so removal is
+            // not a way to erase it. A cancel keeps it readable.
+            if let Some(task) = tasks.iter().find(|task| {
+                task.project_name == project_name
+                    && doomed.contains(&task.id)
+                    && task.request.as_ref().is_some_and(|request| request.answer.is_some())
+            }) {
+                return Err(MoveError::DeletingDecision(task.subject.clone()));
             }
             let mut removed = Vec::new();
             tasks.retain(|t| {
@@ -1160,6 +2312,172 @@ impl Workspace {
         Ok(removed)
     }
 
+    /// Archive every terminal tree that has stood still past
+    /// [`RETENTION_SECS`], returning the rows taken. A top-level row goes
+    /// only with a tree in which every row has ended: an open child holds
+    /// its parent where it is, and a completed child stays under its live
+    /// epic because the epic's rollup reads it. Called from the same sweep
+    /// as the chase, so a row leaves without anyone asking.
+    pub(crate) fn retain_terminal_rows(&self, now: SystemTime) -> Vec<Task> {
+        let mut archived = Vec::new();
+        let projects: Vec<String> =
+            self.list_projects().into_iter().map(|view| view.name).collect();
+        for project in projects {
+            let age = |task: &Task| {
+                now.duration_since(task.updated_at).map_or(0, |elapsed| elapsed.as_secs())
+            };
+            let taken = self.with_tasks_mut(|tasks| {
+                let mut children: std::collections::HashMap<&TaskId, Vec<usize>> =
+                    std::collections::HashMap::new();
+                for (index, task) in tasks.iter().enumerate() {
+                    if task.project_name == project
+                        && let Some(parent) = &task.parent
+                    {
+                        children.entry(parent).or_default().push(index);
+                    }
+                }
+                let mut doomed: Vec<TaskId> = Vec::new();
+                for task in tasks.iter() {
+                    if task.project_name != project
+                        || task.parent.is_some()
+                        || !task.status.is_terminal()
+                        || age(task) < RETENTION_SECS
+                    {
+                        continue;
+                    }
+                    let mut tree = vec![task.id.clone()];
+                    let mut whole = true;
+                    let mut cursor = 0;
+                    while cursor < tree.len() && whole {
+                        let current = tree[cursor].clone();
+                        cursor += 1;
+                        for index in children.get(&current).into_iter().flatten() {
+                            // **Every row in the tree waits its own
+                            // window**: a child that just ended must not be
+                            // archived because its root ended a day earlier.
+                            if !tasks[*index].status.is_terminal()
+                                || age(&tasks[*index]) < RETENTION_SECS
+                            {
+                                whole = false;
+                                break;
+                            }
+                            tree.push(tasks[*index].id.clone());
+                        }
+                    }
+                    if whole {
+                        doomed.extend(tree);
+                    }
+                }
+                if doomed.is_empty() {
+                    return Vec::new();
+                }
+                let doomed: HashSet<TaskId> = doomed.into_iter().collect();
+                let mut taken = Vec::new();
+                tasks.retain(|task| {
+                    let taking = task.project_name == project && doomed.contains(&task.id);
+                    if taking {
+                        taken.push(task.clone());
+                    }
+                    !taking
+                });
+                for task in &mut taken {
+                    task.archived_at = Some(now);
+                    task.version = task.version.saturating_add(1);
+                    self.delete_stored_task(&project, &task.id);
+                }
+                taken
+            });
+            if taken.is_empty() {
+                continue;
+            }
+            if let Some(db) = self.db.lock().as_ref()
+                && let Err(error) = crate::store::task_archive::append(db, &taken)
+            {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    project = %project,
+                    %error,
+                    "retaining a terminal tree failed to archive it; the rows are gone from the live set",
+                );
+            }
+            self.announce_tasks_changed(&project);
+            archived.extend(taken);
+        }
+        archived
+    }
+
+    /// A project's archived rows, oldest archive first, with the failure kept
+    /// apart from an empty archive:
+    /// a caller looking a row up must not answer "no such task" for a store
+    /// it could not read.
+    pub fn archived_tasks_for_project_checked(
+        &self,
+        project_name: &str,
+    ) -> Result<Vec<Task>, String> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return Err("this run has no task store open".to_owned());
+        };
+        let mut rows = crate::store::task_archive::list_for_project(db, project_name)
+            .map_err(|error| error.to_string())?;
+        rows.sort_by_key(|task| task.archived_at);
+        Ok(rows)
+    }
+
+    /// Bring an archived row and the tree it took back to the live set,
+    /// with its stamp cleared. The row returns terminal: the bulk board
+    /// still keeps it out of the way, and the reopened door is a move. An
+    /// id the archive does not hold is absent, not an error.
+    pub(crate) fn restore_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+    ) -> Result<Option<Task>, MoveError> {
+        let archived = self
+            .archived_tasks_for_project_checked(project_name)
+            .map_err(MoveError::ArchiveUnreadable)?;
+        if !archived.iter().any(|task| task.id == *id) {
+            return Ok(None);
+        }
+        let mut tree: Vec<TaskId> = vec![id.clone()];
+        let mut cursor = 0;
+        while cursor < tree.len() {
+            let current = tree[cursor].clone();
+            cursor += 1;
+            for task in &archived {
+                if task.parent.as_ref() == Some(&current) && !tree.contains(&task.id) {
+                    tree.push(task.id.clone());
+                }
+            }
+        }
+        let mut restored: Vec<Task> =
+            archived.into_iter().filter(|task| tree.contains(&task.id)).collect();
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::task_archive::remove(db, &restored)
+        {
+            tracing::error!(
+                target: "forge_workspace::tasks",
+                project = %project_name,
+                %error,
+                "restoring a row failed to take it off the archive; it may read twice",
+            );
+        }
+        let at = SystemTime::now();
+        for task in &mut restored {
+            task.archived_at = None;
+            task.version = task.version.saturating_add(1);
+            task.updated_at = at;
+        }
+        self.with_tasks_mut(|tasks| {
+            for task in &restored {
+                self.persist_task(task);
+                tasks.push(task.clone());
+            }
+        });
+        self.announce_tasks_changed(project_name);
+        Ok(restored.into_iter().find(|task| task.id == *id))
+    }
+
     /// Tell every view the project's task set moved, as the set the write
     /// just left. It routes on the project's lead seat, which is the seat a
     /// project-scoped section belongs to; a name no project carries has no
@@ -1174,7 +2492,15 @@ impl Workspace {
             );
             return;
         };
-        let tasks = self.tasks_for_project(project_name);
+        // **The frame carries the live set, exactly what the board read
+        // returns.** A terminal row has left the bulk board; carrying it
+        // here re-added every lingering finished row to the drawn lanes
+        // after each write until the next read (#3031).
+        let tasks: Vec<Task> = self
+            .tasks_for_project(project_name)
+            .into_iter()
+            .filter(|task| !task.status.is_terminal())
+            .collect();
         let _ = self.update_tx.send(SessionUpdate::TasksChanged { key, tasks });
     }
 
@@ -1215,8 +2541,64 @@ mod tests {
     use super::*;
     use crate::SeatUpdate;
     use crate::{SessionSlot, SessionUpdate};
-    use forge_primitives::tasks::{By, Task, TaskId, TaskStatus, Waiting, WaitingKind};
+    use forge_primitives::tasks::{
+        By, Evidence, LinkCheck, Task, TaskId, TaskLink, TaskStatus, Waiting, WaitingKind,
+    };
     use tempfile::tempdir;
+
+    /// A pull-request link as a row carries it, unchecked by default.
+    fn pr_link(target: &str) -> TaskLink {
+        TaskLink {
+            kind: forge_primitives::tasks::LinkKind::Pr,
+            label: None,
+            target: target.to_owned(),
+            state: None,
+            last_check: None,
+            added_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    /// A pull-request link with a connector check stamped now.
+    fn pr_link_checked(target: &str, ci: Option<&str>) -> TaskLink {
+        TaskLink {
+            state: Some("open".to_owned()),
+            last_check: Some(LinkCheck {
+                at: std::time::SystemTime::now(),
+                changed_at: Some(std::time::SystemTime::now()),
+                state: Some("open".to_owned()),
+                head: Some("abc123".to_owned()),
+                ci: ci.map(str::to_owned),
+                problem: None,
+            }),
+            ..pr_link(target)
+        }
+    }
+
+    /// A verifier that answers exactly what the test tells it: the
+    /// workspace's own check is the trait, so the gate's refusals are
+    /// driven without a repository.
+    struct FixedVerifier(std::sync::Mutex<Result<(), String>>);
+
+    impl FixedVerifier {
+        fn accepting() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self(std::sync::Mutex::new(Ok(()))))
+        }
+        fn refusing(reason: &str) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self(std::sync::Mutex::new(Err(reason.to_owned()))))
+        }
+    }
+
+    impl crate::env::evidence::EvidenceVerifier for FixedVerifier {
+        fn verify(
+            &self,
+            _repo: &std::path::Path,
+            _commit: Option<&str>,
+            _path: Option<&str>,
+        ) -> Result<(), String> {
+            let answer = self.0.lock().expect("the test's verifier lock");
+            answer.clone()
+        }
+    }
 
     fn install_db(ws: &Workspace, dir: &std::path::Path) {
         let db = crate::store::Db::open(&dir.join("db.redb")).expect("open db");
@@ -1273,8 +2655,37 @@ mod tests {
         }
     }
 
+    /// The LAST `TasksChanged` a test's stream holds: every task write
+    /// announces its project's set, so the frame a test is asking about is
+    /// the one its own write left, not the creation that came before it.
+    fn last_tasks_changed(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+    ) -> (SessionSlot, Vec<Task>) {
+        let mut last = None;
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::TasksChanged { key, tasks } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
+                last = Some((key, tasks));
+            }
+        }
+        last.expect("the stream holds a TasksChanged")
+    }
+
     fn subjects(tasks: &[Task]) -> Vec<String> {
         tasks.iter().map(|task| task.subject.clone()).collect()
+    }
+
+    /// A claim the stub verifier accepts: this suite is about the moves,
+    /// and the gate's own refusals have their own tests below.
+    fn passing_evidence() -> Option<forge_primitives::tasks::Evidence> {
+        Some(forge_primitives::tasks::Evidence {
+            commit: Some("test-commit".to_owned()),
+            path: None,
+            excerpt: None,
+            verified_at: None,
+            problem: None,
+        })
     }
 
     fn sample_task(id: &str, project: &str) -> Task {
@@ -1285,16 +2696,20 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: passing_evidence(),
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -1315,6 +2730,7 @@ mod tests {
     fn a_task_can_be_updated_by_a_session_that_does_not_own_it() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("forge", "/tmp/tp-update-any");
         // A child row: a completing ROOT closes and archives (own test).
         let mut seeded = sample_task("t-1", "forge");
         seeded.parent = Some(TaskId::from("epic"));
@@ -1464,7 +2880,7 @@ mod tests {
         still_seeded("an update naming no loaded row");
 
         assert_eq!(
-            ws.claim_task("proj", &worker, Some(&TaskId::from("seed-1")), None),
+            ws.claim_task("proj", &worker, &TaskId::from("seed-1")),
             Err(ClaimError::NotFound),
             "precondition: the empty in-memory set holds no such row to claim",
         );
@@ -1508,8 +2924,7 @@ mod tests {
 
         // Doors that DO change something, each on a loaded row: a whole-set
         // write gated behind the change takes the unloaded rows with it.
-        ws.claim_task("proj", &worker, Some(&TaskId::from("created")), None)
-            .expect("the loaded row is free");
+        ws.claim_task("proj", &worker, &TaskId::from("created")).expect("the loaded row is free");
         still_seeded("a claim of a loaded row");
 
         ws.wait_task(
@@ -1549,8 +2964,7 @@ mod tests {
         // A released wait: the sweep writes each row it hands back.
         ws.push_task(sample_task("blocker", "proj"));
         ws.push_task(sample_task("waiter", "proj"));
-        ws.claim_task("proj", &other, Some(&TaskId::from("waiter")), None)
-            .expect("the loaded row is free");
+        ws.claim_task("proj", &other, &TaskId::from("waiter")).expect("the loaded row is free");
         ws.wait_task(
             "proj",
             &TaskId::from("waiter"),
@@ -1617,8 +3031,11 @@ mod tests {
         );
         let (key, tasks) = next_tasks_changed(&mut rx);
         assert_eq!(key, lead, "an update routes the same way");
-        assert_eq!(tasks.len(), 1, "and announces the whole set");
-        assert_eq!(tasks[0].status, TaskStatus::Completed, "the write's own change included");
+        assert!(
+            tasks.is_empty(),
+            "the frame is the LIVE set: a finished row left it, and the closed shelf reads \
+             those on its own"
+        );
 
         assert!(
             !ws.remove_task_tree("proj", &TaskId::from("t-1"))
@@ -1779,11 +3196,15 @@ mod tests {
         ws.push_task(Task {
             status: TaskStatus::Waiting,
             waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: Some("which shape".to_owned()),
                 on: None,
                 verification: false,
                 parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -1875,6 +3296,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.push_task(waiting);
@@ -1897,6 +3322,7 @@ mod tests {
     fn a_user_move_still_takes_the_verify_gate() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("forge", "/tmp/tp-verify-gate");
         let mut row = sample_task("t-1", "forge");
         row.verify = Some(Verify::User);
         ws.push_task(row);
@@ -1913,7 +3339,7 @@ mod tests {
     }
 
     #[test]
-    fn a_send_back_returns_the_row_and_ticks_the_attempt() {
+    fn a_send_back_returns_the_row_with_the_reason() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-sendback");
@@ -1925,7 +3351,6 @@ mod tests {
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(sent.status, TaskStatus::InProgress, "back to its owner's hands");
-        assert_eq!(sent.attempt, 1, "the send-back ticks the attempt");
         assert_eq!(
             sent.detail.as_deref(),
             Some("the rail elides wrong"),
@@ -1956,17 +3381,630 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-answer");
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
-        ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::Decision, None, None)
-            .expect("wait");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
+        ws.wait_request_task_at_version(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            None,
+            Request {
+                kind: AskKind::Clarification,
+                question: "which store should the window draw from?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
+            None,
+        )
+        .expect("ask");
 
         let answered = ws
-            .answer_task("proj", &TaskId::from("t-1"), "keep the window raise")
+            .answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Text("keep the window raise".to_owned()),
+                None,
+                None,
+            )
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(answered.status, TaskStatus::InProgress, "the answer resumes the row");
         assert_eq!(answered.waiting_on, None);
+        let record = answered
+            .request
+            .as_ref()
+            .and_then(|request| request.answer.as_ref())
+            .expect("the answer is the record");
+        assert_eq!(record.value, AnswerValue::Text("keep the window raise".to_owned()));
+    }
+
+    /// A row written before the record existed carries no request: the
+    /// value still answers it, landing in the detail as it always did.
+    #[test]
+    fn a_pre_record_question_wait_takes_the_value_into_its_detail() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-answer-legacy");
+        ws.push_task(Task {
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::User),
+                detail: Some("keep the window raise".to_owned()),
+                on: None,
+                verification: false,
+                parked: false,
+                since: Some(SystemTime::now()),
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let answered = ws
+            .answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Text("keep the window raise".to_owned()),
+                None,
+                None,
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(answered.status, TaskStatus::InProgress, "the answer resumes the row");
         assert_eq!(answered.detail.as_deref(), Some("keep the window raise"));
+    }
+
+    /// The digest's counts carry the rows behind them: an answered ask is
+    /// one moved item naming its answer, and an expired ask keeps its
+    /// record on the expired line rather than reading as a bare cancel.
+    #[test]
+    fn the_board_delta_carries_the_items_its_counts_count() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delta-items");
+        install_db(&ws, dir.path());
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let since = SystemTime::now();
+        let raise = |id: &str, kind: AskKind| {
+            ws.push_task(Task { owner: Some(worker.clone()), ..sample_task(id, "proj") });
+            ws.wait_request_task_at_version(
+                "proj",
+                &TaskId::from(id),
+                &worker,
+                None,
+                Request {
+                    kind,
+                    question: "what now?".to_owned(),
+                    options: Vec::new(),
+                    class: None,
+                    answer: None,
+                },
+                None,
+                None,
+            )
+            .expect("the ask lands");
+        };
+
+        raise("answered", AskKind::Clarification);
+        ws.answer_decision(
+            "proj",
+            &TaskId::from("answered"),
+            By::User,
+            AnswerValue::Text("the scratch store".to_owned()),
+            None,
+            None,
+        )
+        .expect("the answer lands")
+        .expect("the row is there");
+        raise("expired", AskKind::Decision);
+        ws.expire_ask("proj", &TaskId::from("expired"), SystemTime::now(), "expired: no answer");
+
+        let delta = ws.board_delta("proj", Some(since));
+        let moved = delta
+            .moved_items
+            .iter()
+            .find(|item| item.subject == "subject answered")
+            .expect("the answered row is a moved item");
+        assert!(
+            moved.word.contains("answered") && moved.word.contains("the scratch store"),
+            "the moved item names the answer: {moved:?}",
+        );
+        assert_eq!(delta.expired, 1, "one ask expired: {delta:?}");
+        assert_eq!(delta.expired_items[0].subject, "subject expired");
+        assert!(
+            delta.expired_items[0].word.contains("expired"),
+            "the expired item keeps its own word: {:?}",
+            delta.expired_items[0],
+        );
+        assert!(delta.landed_items.iter().any(|item| item.subject == "subject expired"));
+    }
+
+    /// **A row the store archived is still a row that moved**: a tree close
+    /// archives its rows at once and retention takes the rest, so a digest
+    /// that read only the live set would report a finished epic as nothing.
+    #[test]
+    fn the_board_delta_counts_a_row_the_archive_holds() {
+        use crate::store::{task_archive, task_history};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delta-archived");
+        install_db(&ws, dir.path());
+        let since = SystemTime::now();
+        let mut ended = sample_task("archived-1", "proj");
+        ended.status = TaskStatus::Completed;
+        ended.subject = "the epic that ended".to_owned();
+        ended.updated_at = SystemTime::now();
+        {
+            let guard = ws.db.lock();
+            let db = guard.as_ref().expect("db");
+            task_archive::append(db, &[ended.clone()]).expect("archive the row");
+            task_history::append(
+                db,
+                &[TaskTransition {
+                    task_id: TaskId::from("archived-1"),
+                    project_name: "proj".to_owned(),
+                    from: Some(TaskStatus::InProgress),
+                    to: TaskStatus::Completed,
+                    at: SystemTime::now(),
+                    by: By::System,
+                }],
+            )
+            .expect("its transition");
+        }
+        let delta = ws.board_delta("proj", Some(since));
+        assert_eq!(delta.landed, 1, "the archived row landed: {delta:?}");
+        assert_eq!(delta.landed_items[0].subject, "the epic that ended");
+    }
+
+    /// A closed row's page is derived like a live one's: its worked time and
+    /// its history come from the log, not from placeholders.
+    #[test]
+    fn a_closed_rows_detail_derives_its_worked_time_and_history() {
+        let mut task = sample_task("done-1", "proj");
+        task.status = TaskStatus::Completed;
+        let epoch = |secs: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        let history = [
+            TaskTransition {
+                task_id: TaskId::from("done-1"),
+                project_name: "proj".to_owned(),
+                from: Some(TaskStatus::Pending),
+                to: TaskStatus::InProgress,
+                at: epoch(0),
+                by: By::Seat(SessionSlot::worker("TestOrg", "proj", "w-1")),
+            },
+            TaskTransition {
+                task_id: TaskId::from("done-1"),
+                project_name: "proj".to_owned(),
+                from: Some(TaskStatus::InProgress),
+                to: TaskStatus::Completed,
+                at: epoch(100),
+                by: By::Seat(SessionSlot::lead("TestOrg", "proj")),
+            },
+        ];
+        let row = crate::board::detail_row(task, &history, epoch(200), false);
+        assert_eq!(row.history_total, 2, "the drawer's whole trail: {row:?}");
+        assert_eq!(row.history.len(), 2);
+        assert_eq!(row.worked_secs, 100, "the worked time is the log's, not zero");
+    }
+
+    /// **Every park on the user is an ask or a look**: a bare `user` wait
+    /// has no door to draw, so the wait door refuses it by name.
+    #[test]
+    fn a_bare_wait_on_the_user_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-bare-user-wait");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
+        assert_eq!(
+            ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::User, None, None),
+            Err(MoveError::BareUserWait),
+        );
+    }
+
+    /// A decision wait records the question and the options the lead
+    /// enumerated, and the answer is the record: what was chosen, when and
+    /// the note, with the row resumed.
+    #[test]
+    fn a_decision_wait_records_its_question_and_the_answer_is_the_record() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-decision");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+
+        let waited = ws
+            .wait_decision_task(
+                "proj",
+                &TaskId::from("t-1"),
+                &worker,
+                Some("why it needs the user".to_owned()),
+                "Ship the parser behind a flag?".to_owned(),
+                vec!["flag it".to_owned(), "ship it outright".to_owned()],
+            )
+            .expect("the owner may wait its own row");
+        let request = waited.request.expect("the ask rides the row");
+        assert_eq!(request.question, "Ship the parser behind a flag?");
+        assert_eq!(request.options, ["flag it", "ship it outright"]);
+        assert_eq!(request.answer, None, "a waiting row has no answer yet");
+        assert_eq!(waited.status, TaskStatus::Waiting);
+
+        let answered = ws
+            .answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Choice("flag it".to_owned()),
+                Some("until the bench is green"),
+                None,
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(answered.status, TaskStatus::InProgress, "the answer resumes the row");
+        assert_eq!(answered.waiting_on, None, "and clears the wait");
+        let answer = answered.request.expect("the record keeps the ask").answer.expect("answered");
+        assert_eq!(answer.value_words(), "flag it");
+        assert_eq!(answer.note.as_deref(), Some("until the bench is green"));
+    }
+
+    /// A choice the row did not offer is refused by name; answering is not
+    /// a way to put words in the options list.
+    #[test]
+    fn an_answer_naming_a_choice_the_row_does_not_offer_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-decision-refused");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.wait_decision_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            None,
+            "Which shape?".to_owned(),
+            vec!["small".to_owned(), "large".to_owned()],
+        )
+        .expect("the wait lands");
+
+        assert_eq!(
+            ws.answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Choice("huge".to_owned()),
+                None,
+                None,
+            ),
+            Err(MoveError::NotAnOption("huge".to_owned())),
+            "a choice the row does not offer is refused",
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Waiting,
+            "and the row stays waiting for the user",
+        );
+    }
+
+    /// An answer is the decision's own door: a resource or dependency wait
+    /// is resumed by a move, not by recording a choice nobody asked for.
+    #[test]
+    fn an_answer_is_refused_on_a_wait_that_is_not_a_decision() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-answer-gate");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Resource,
+            Some("the CI run".to_owned()),
+            None,
+        )
+        .expect("the wait lands");
+
+        assert_eq!(
+            ws.answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Choice("ship it".to_owned()),
+                None,
+                None,
+            ),
+            Err(MoveError::NotWaitingQuestion),
+            "a resource wait takes no choice",
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Waiting,
+            "and the row stays waiting",
+        );
+    }
+
+    /// An answered decision is the only copy of what was asked and what
+    /// was chosen: the delete door refuses it, so a cancel - which keeps
+    /// the row - is the way to end the work.
+    #[test]
+    fn a_delete_does_not_erase_an_answered_decision() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-decision-record");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.wait_decision_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            None,
+            "Which shape?".to_owned(),
+            vec!["small".to_owned(), "large".to_owned()],
+        )
+        .expect("the wait lands");
+        ws.answer_decision(
+            "proj",
+            &TaskId::from("t-1"),
+            By::User,
+            AnswerValue::Choice("small".to_owned()),
+            Some("it fits"),
+            None,
+        )
+        .expect("the answer lands")
+        .expect("the row is there");
+
+        let refused = ws
+            .remove_task_tree("proj", &TaskId::from("t-1"))
+            .expect_err("the record is the only copy");
+        assert!(
+            matches!(&refused, MoveError::DeletingDecision(subject) if subject.contains("t-1")),
+            "the refusal names the row: {refused}",
+        );
+        let rows = ws.tasks_for_project("proj");
+        assert_eq!(rows.len(), 1, "the row and its record survive");
+        assert_eq!(
+            rows[0]
+                .request
+                .as_ref()
+                .and_then(|request| request.answer.as_ref().map(Answer::value_words))
+                .as_deref(),
+            Some("small"),
+            "the answer is still readable",
+        );
+    }
+
+    /// The ask kinds take one value each: text for a clarification and a
+    /// teaching, an enumerated disposition for an exception. A choice
+    /// cannot answer a clarification, and a teaching writes the policy note
+    /// its class is settled by - a second ask of that class is refused.
+    #[test]
+    fn each_ask_kind_takes_its_own_value_and_a_teaching_settles_its_class() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        install_db(&ws, dir.path());
+        ws.seed_test_project("proj", "/tmp/tp-ask-kinds");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let raise = |id: &str, request: Request| {
+            ws.push_task(Task { owner: Some(worker.clone()), ..sample_task(id, "proj") });
+            ws.wait_request_task_at_version(
+                "proj",
+                &TaskId::from(id),
+                &worker,
+                None,
+                request,
+                None,
+                None,
+            )
+            .expect("the ask lands");
+        };
+
+        raise(
+            "clarify",
+            Request {
+                kind: AskKind::Clarification,
+                question: "Which account is the staging one?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+        );
+        assert!(
+            matches!(
+                ws.answer_decision(
+                    "proj",
+                    &TaskId::from("clarify"),
+                    By::User,
+                    AnswerValue::Choice("Granite".to_owned()),
+                    None,
+                    None,
+                ),
+                Err(MoveError::AnswerShape(_)),
+            ),
+            "an option list cannot answer a clarification",
+        );
+        let answered = ws
+            .answer_decision(
+                "proj",
+                &TaskId::from("clarify"),
+                By::User,
+                AnswerValue::Text("Granite".to_owned()),
+                None,
+                None,
+            )
+            .expect("the answer lands")
+            .expect("the row is there");
+        assert_eq!(
+            answered.request.expect("the record").answer.expect("answered").value_words(),
+            "Granite",
+        );
+
+        raise(
+            "fault",
+            Request {
+                kind: AskKind::Exception,
+                question: "The flake is back: what now?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+        );
+        assert!(
+            matches!(
+                ws.answer_decision(
+                    "proj",
+                    &TaskId::from("fault"),
+                    By::User,
+                    AnswerValue::Text("retry".to_owned()),
+                    None,
+                    None,
+                ),
+                Err(MoveError::AnswerShape(_)),
+            ),
+            "an exception takes an enumerated disposition, not words",
+        );
+        ws.answer_decision(
+            "proj",
+            &TaskId::from("fault"),
+            By::User,
+            AnswerValue::Disposition(Disposition::Retry),
+            Some("once, then report"),
+            None,
+        )
+        .expect("the disposition lands")
+        .expect("the row is there");
+
+        let lesson = "Report the run; never retry a flake twice.";
+        raise(
+            "teach",
+            Request {
+                kind: AskKind::Teaching,
+                question: "Which rule settles flaky CI retries?".to_owned(),
+                options: Vec::new(),
+                class: Some("ci-flake".to_owned()),
+                answer: None,
+            },
+        );
+        let taught = ws
+            .answer_decision(
+                "proj",
+                &TaskId::from("teach"),
+                By::User,
+                AnswerValue::Text(lesson.to_owned()),
+                None,
+                Some(lesson),
+            )
+            .expect("the teaching lands")
+            .expect("the row is there");
+        assert_eq!(
+            taught
+                .request
+                .as_ref()
+                .and_then(|request| request.answer.as_ref())
+                .and_then(|answer| answer.lesson.as_deref()),
+            Some(lesson),
+            "the lesson is persisted on the row, not only in the policy note",
+        );
+        let notes = ws.policy_notes_for_project("proj");
+        assert_eq!(notes.len(), 1, "the lesson is a project policy note: {notes:?}");
+        assert_eq!(notes[0].class, "ci-flake");
+        assert_eq!(notes[0].text, lesson);
+
+        // The class is settled: raising it again is refused, naming the note.
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("teach-again", "proj") });
+        let refused = ws
+            .wait_request_task_at_version(
+                "proj",
+                &TaskId::from("teach-again"),
+                &worker,
+                None,
+                Request {
+                    kind: AskKind::Teaching,
+                    question: "Same trouble again?".to_owned(),
+                    options: Vec::new(),
+                    class: Some("ci-flake".to_owned()),
+                    answer: None,
+                },
+                None,
+                None,
+            )
+            .expect_err("a settled class is not raised again");
+        assert!(
+            matches!(&refused, MoveError::PolicySettled { class, text }
+                if class == "ci-flake" && text.contains("never retry")),
+            "the refusal quotes the note: {refused}",
+        );
+    }
+
+    /// The item states: acknowledge is not an answer, a snooze is quiet
+    /// until its time or the row's next move, and an expiry ends the row
+    /// canceled while the ask's record stays on it.
+    #[test]
+    fn an_ask_acknowledges_snoozes_and_expires_with_its_record_kept() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        install_db(&ws, dir.path());
+        ws.seed_test_project("proj", "/tmp/tp-ask-states");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.wait_request_task_at_version(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            None,
+            Request {
+                kind: AskKind::Clarification,
+                question: "Which account?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
+            None,
+        )
+        .expect("the ask lands");
+
+        let acknowledged =
+            ws.acknowledge_task("proj", &TaskId::from("t-1")).expect("the ack lands").expect("row");
+        assert_eq!(acknowledged.status, TaskStatus::Waiting, "acknowledged is not answered");
+        let wait = acknowledged.waiting_on.as_ref().expect("still waiting");
+        assert!(wait.acknowledged_at.is_some(), "the seen stamp is recorded");
+
+        let snoozed = ws
+            .snooze_task(
+                "proj",
+                &TaskId::from("t-1"),
+                forge_primitives::tasks::SnoozeUntil::Activity,
+            )
+            .expect("the snooze lands")
+            .expect("row");
+        let wait = snoozed.waiting_on.as_ref().expect("still waiting");
+        assert!(wait.snoozed.is_some(), "the deferral is recorded");
+        assert!(
+            snooze_active(wait, snoozed.updated_at, SystemTime::now()),
+            "an activity snooze holds until the row moves",
+        );
+        assert!(
+            !snooze_active(
+                wait,
+                snoozed.updated_at + std::time::Duration::from_secs(1),
+                SystemTime::now()
+            ),
+            "a touch ends it",
+        );
+
+        let expired = ws
+            .expire_ask("proj", &TaskId::from("t-1"), SystemTime::now(), "expired: no answer")
+            .expect("the row is there");
+        assert_eq!(expired.status, TaskStatus::Canceled, "expiry ends the row canceled");
+        let wait = expired.waiting_on.as_ref().expect("the wait's record is kept");
+        assert!(wait.expired_at.is_some(), "and says when it expired");
+        assert!(expired.request.is_some(), "the ask itself is kept");
     }
 
     #[test]
@@ -1982,7 +4020,14 @@ mod tests {
             "a pending row is not waiting on a look",
         );
         assert_eq!(
-            ws.answer_task("proj", &TaskId::from("t-1"), "words"),
+            ws.answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Text("words".to_owned()),
+                None,
+                None,
+            ),
             Err(MoveError::NotWaitingQuestion),
         );
     }
@@ -2070,7 +4115,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_sets_owner_and_in_progress_in_one_write_and_ticks_the_attempt() {
+    fn claim_sets_owner_and_in_progress_in_one_write() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-claim");
@@ -2078,18 +4123,84 @@ mod tests {
         ws.push_task(sample_task("t-1", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
 
-        let claimed = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("t-1")), None)
-            .expect("the row is free");
+        let claimed =
+            ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("the row is free");
         assert_eq!(claimed.owner.as_ref().map(SessionSlot::label), Some("w-1"));
         assert_eq!(claimed.status, TaskStatus::InProgress, "owner and status in one write");
-        assert_eq!(claimed.attempt, 1, "each claim ticks the attempt");
+        assert_eq!(claimed.version, 1, "the claim is the row's first write");
         let history = history_of(&ws, "proj");
         assert_eq!(history.len(), 2, "creation and the claim: {history:?}");
         let claim = history.last().expect("the claim's transition");
         assert_eq!(claim.from, Some(TaskStatus::Pending));
         assert_eq!(claim.to, TaskStatus::InProgress);
         assert_eq!(claim.by, By::Seat(worker));
+    }
+
+    /// Every write the row takes moves its version, so an update naming
+    /// the version it read can tell a lost write from a clean one. Row
+    /// creation is version 0; nothing else leaves it where it was.
+    #[test]
+    fn every_write_bumps_the_version() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-version");
+        install_db(&ws, dir.path());
+        ws.push_task(sample_task("t-1", "proj"));
+        let version = |ws: &Workspace| {
+            ws.tasks_for_project("proj").into_iter().next().expect("the row").version
+        };
+        assert_eq!(version(&ws), 0, "creation is version 0");
+
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.update_task("proj", &TaskId::from("t-1"), By::Seat(worker.clone()), |task| {
+            task.active_form = Some("fixing the rail".to_owned());
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        assert_eq!(version(&ws), 1, "an update is a write");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
+        assert_eq!(version(&ws), 2, "a claim is a write");
+        ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::Resource, None, None)
+            .expect("wait");
+        assert_eq!(version(&ws), 3, "a wait is a write");
+    }
+
+    /// An update that names the version it read lands; one naming a version
+    /// the row has left is refused with both numbers, and nothing moves.
+    #[test]
+    fn a_stale_version_is_refused_naming_both() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-version-mismatch");
+        ws.push_task(sample_task("t-1", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        ws.update_task_at_version(
+            "proj",
+            &TaskId::from("t-1"),
+            By::Seat(worker.clone()),
+            Some(0),
+            |task| {
+                task.active_form = Some("the first write".to_owned());
+            },
+        )
+        .expect("no refusal")
+        .expect("the row is there");
+
+        assert_eq!(
+            ws.update_task_at_version(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(worker),
+                Some(0),
+                |task| task.active_form = Some("the lost write".to_owned()),
+            ),
+            Err(MoveError::VersionMismatch { expected: 0, current: 1 }),
+            "a write naming the version it read before another landed is refused",
+        );
+        let stored = &ws.tasks_for_project("proj")[0];
+        assert_eq!(stored.active_form.as_deref(), Some("the first write"), "nothing moved");
+        assert_eq!(stored.version, 1, "and the refused write did not bump the version");
     }
 
     #[test]
@@ -2104,7 +4215,7 @@ mod tests {
         let other = SessionSlot::worker("TestOrg", "proj", "w-2");
 
         assert_eq!(
-            ws.claim_task("proj", &other, Some(&TaskId::from("t-1")), None),
+            ws.claim_task("proj", &other, &TaskId::from("t-1")),
             Err(ClaimError::OwnedByLiveSeat("w-1".to_owned())),
             "a live seat's row is refused by name",
         );
@@ -2123,7 +4234,7 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-2");
 
         let claimed = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("t-1")), None)
+            .claim_task("proj", &worker, &TaskId::from("t-1"))
             .expect("a dead owner does not hold a row");
         assert_eq!(claimed.owner.as_ref().map(SessionSlot::label), Some("w-2"));
     }
@@ -2136,67 +4247,33 @@ mod tests {
         ws.push_task(sample_task("t-1", "proj"));
         ws.push_task(sample_task("t-2", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("first claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("first claim");
 
         assert_eq!(
-            ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None),
+            ws.claim_task("proj", &worker, &TaskId::from("t-2")),
             Err(ClaimError::AlreadyWorking),
             "one in progress per worker",
         );
     }
 
-    #[test]
-    fn claim_by_epic_takes_the_top_ready_row_by_rank() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project("proj", "/tmp/tp-claim-rank");
-        ws.push_task(sample_task_with_parent("epic", None, "proj"));
-        ws.push_task(Task {
-            rank: Some(20),
-            ..sample_task_with_parent("late", Some("epic"), "proj")
-        });
-        ws.push_task(Task {
-            rank: Some(10),
-            ..sample_task_with_parent("early", Some("epic"), "proj")
-        });
-        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-
-        let claimed = ws
-            .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
-            .expect("a ready row is there");
-        assert_eq!(claimed.id, TaskId::from("early"), "the top ready row by rank");
-    }
-
-    /// A pick reserved for the user is nobody's to claim: neither by id nor
-    /// through its epic's ready row (#2423/C).
+    /// A pick reserved for the user is nobody's to claim (#2423/C).
     #[test]
     fn a_reserved_pick_is_not_claimable() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-claim-reserved");
-        ws.push_task(sample_task_with_parent("epic", None, "proj"));
-        // The reserved row OUTRANKS the free one, so only the reservation
-        // filter can keep the epic pull off it.
-        ws.push_task(Task {
-            rank: Some(1),
-            reserved: Some(ReservedBy::User),
-            ..sample_task_with_parent("kept", Some("epic"), "proj")
-        });
-        ws.push_task(Task {
-            rank: Some(10),
-            ..sample_task_with_parent("free", Some("epic"), "proj")
-        });
+        ws.push_task(Task { reserved: Some(ReservedBy::User), ..sample_task("kept", "proj") });
+        ws.push_task(sample_task("free", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
 
         assert_eq!(
-            ws.claim_task("proj", &worker, Some(&TaskId::from("kept")), None),
-            Err(ClaimError::NotReady),
-            "a named reserved row is refused as not ready",
+            ws.claim_task("proj", &worker, &TaskId::from("kept")),
+            Err(ClaimError::Reserved),
+            "a reserved row is the user's pick, refused by name",
         );
-        let claimed = ws
-            .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
-            .expect("the free row is still there");
-        assert_eq!(claimed.id, TaskId::from("free"), "the epic pull skips the reserved row");
+        let claimed =
+            ws.claim_task("proj", &worker, &TaskId::from("free")).expect("the free row is there");
+        assert_eq!(claimed.id, TaskId::from("free"), "the unreserved row is claimable");
     }
 
     /// The reservation is the user's to set and release, and the write
@@ -2238,22 +4315,17 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-claim-prefix");
         ws.push_task(named_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail", "proj"));
         ws.push_task(named_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests", "proj"));
-        ws.push_task(named_task("epic-7ed0aaaa-0000-4000-8000-000000000003", "the epic", "proj"));
-        ws.push_task(Task {
-            parent: Some(TaskId::from("epic-7ed0aaaa-0000-4000-8000-000000000003")),
-            ..named_task("child-1", "the child", "proj")
-        });
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
 
         let refused = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("7ed0")), None)
+            .claim_task("proj", &worker, &TaskId::from("7ed0"))
             .expect_err("two rows carry that prefix");
         let said = refused.to_string();
         assert!(said.contains("7ed0aaaa-0000-4000-8000-000000000001"), "one row is named: {said}");
         assert!(said.contains("7ed0bbbb-0000-4000-8000-000000000002"), "and the other: {said}");
 
         let unknown = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("ffff")), None)
+            .claim_task("proj", &worker, &TaskId::from("ffff"))
             .expect_err("no row carries that prefix");
         assert!(
             unknown.to_string().contains("no such row"),
@@ -2261,22 +4333,12 @@ mod tests {
         );
 
         let claimed = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("7ed0bb")), None)
+            .claim_task("proj", &worker, &TaskId::from("7ed0bb"))
             .expect("one row carries that prefix");
         assert_eq!(
             claimed.id,
             TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"),
             "the prefix landed on its row",
-        );
-
-        let other = SessionSlot::worker("TestOrg", "proj", "w-2");
-        let by_epic = ws
-            .claim_task("proj", &other, None, Some(&TaskId::from("epic-7ed0")))
-            .expect("one row carries that prefix");
-        assert_eq!(
-            by_epic.id,
-            TaskId::from("child-1"),
-            "an epic is named the same way: the prefix pulled its ready child",
         );
     }
 
@@ -2327,8 +4389,7 @@ mod tests {
         ws.push_task(named_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail", "proj"));
         ws.push_task(named_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &worker, Some(&TaskId::from("7ed0bb")), None)
-            .expect("claim by prefix");
+        ws.claim_task("proj", &worker, &TaskId::from("7ed0bb")).expect("claim by prefix");
 
         // The blocker resolves the same way, and the full id is what
         // lands in the wait - the release matches it exactly.
@@ -2350,7 +4411,7 @@ mod tests {
         );
 
         let refused = ws
-            .wait_task("proj", &TaskId::from("7ed0"), &worker, WaitingKind::Decision, None, None)
+            .wait_task("proj", &TaskId::from("7ed0"), &worker, WaitingKind::User, None, None)
             .expect_err("two rows carry that prefix");
         assert!(
             refused.to_string().contains("7ed0bbbb-0000-4000-8000-000000000002"),
@@ -2367,7 +4428,7 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-wait-owner-first");
         ws.push_task(sample_task("t-1", "proj"));
         let holder = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &holder, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &holder, &TaskId::from("t-1")).expect("claim");
 
         let other = SessionSlot::worker("TestOrg", "proj", "w-2");
         assert_eq!(
@@ -2396,7 +4457,7 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
 
         let claimed = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("7ed0")), None)
+            .claim_task("proj", &worker, &TaskId::from("7ed0"))
             .expect("the exact id names its row");
         assert_eq!(claimed.id, TaskId::from("7ed0"), "the exact row, not the one it prefixes");
     }
@@ -2409,7 +4470,7 @@ mod tests {
         ws.push_task(sample_task("blocker", "proj"));
         ws.push_task(sample_task("t-2", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None)
+        ws.claim_task("proj", &worker, &TaskId::from("t-2"))
             .expect("claim the row before waiting it");
         ws.wait_task(
             "proj",
@@ -2421,9 +4482,9 @@ mod tests {
         )
         .expect("the owner may wait its own row");
         assert_eq!(
-            ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None),
-            Err(ClaimError::NotReady),
-            "a waiting row is not claimable",
+            ws.claim_task("proj", &worker, &TaskId::from("t-2")),
+            Err(ClaimError::Waiting),
+            "a waiting row is in play, not startable",
         );
 
         // The blocker ending - canceled, not completed - clears the wait.
@@ -2439,7 +4500,7 @@ mod tests {
         let t2 = t2.expect("t-2 is live");
         assert_eq!(t2.status, TaskStatus::Pending, "a canceled blocker still clears the wait");
         assert_eq!(t2.waiting_on, None);
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None)
+        ws.claim_task("proj", &worker, &TaskId::from("t-2"))
             .expect("and the row is claimable again");
     }
 
@@ -2454,13 +4515,20 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-complete-parked");
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
-        ws.wait_task(
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
+        ws.wait_request_task_at_version(
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::Decision,
             Some("the user's look".to_owned()),
+            Request {
+                kind: AskKind::Clarification,
+                question: "the user's look".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
             None,
         )
         .expect("the owner may wait its own row");
@@ -2529,7 +4597,7 @@ mod tests {
             owner: Some(worker.clone()),
             ..sample_task("t-1", "proj")
         });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -2592,7 +4660,7 @@ mod tests {
             owner: Some(worker.clone()),
             ..sample_task("t-1", "proj")
         });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -2643,6 +4711,10 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -2676,11 +4748,15 @@ mod tests {
             verify: Some(Verify::User),
             status: TaskStatus::Waiting,
             waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: None,
                 on: None,
                 verification: true,
                 parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -2707,24 +4783,33 @@ mod tests {
         let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(seat.clone()), ..sample_task("t-1", "proj") });
 
+        let ask = || Request {
+            kind: AskKind::Clarification,
+            question: "sign this off".to_owned(),
+            options: Vec::new(),
+            class: None,
+            answer: None,
+        };
         let first = ws
-            .wait_task(
+            .wait_request_task_at_version(
                 "proj",
                 &TaskId::from("t-1"),
                 &seat,
-                WaitingKind::Decision,
                 Some("sign this off".to_owned()),
+                ask(),
+                None,
                 None,
             )
             .expect("the owner may wait its own row");
         let started = first.waiting_on.as_ref().and_then(|wait| wait.since).expect("stamped");
         let again = ws
-            .wait_task(
+            .wait_request_task_at_version(
                 "proj",
                 &TaskId::from("t-1"),
                 &seat,
-                WaitingKind::Decision,
                 Some("sign this off".to_owned()),
+                ask(),
+                None,
                 None,
             )
             .expect("a repeated wait is allowed");
@@ -2745,14 +4830,18 @@ mod tests {
             on,
             verification: false,
             parked: false,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         };
         assert_eq!(wait_words(None), "a wait", "no stored wait");
         assert_eq!(wait_words(Some(&wait(None, None))), "a wait", "a legacy unstated wait");
         assert_eq!(
-            wait_words(Some(&wait(Some(WaitingKind::Decision), None))),
-            "a decision",
-            "the question wait a row can be parked on",
+            wait_words(Some(&wait(Some(WaitingKind::User), None))),
+            "a question for the user",
+            "the wait on the person a row can be parked on",
         );
         assert_eq!(wait_words(Some(&wait(Some(WaitingKind::Resource), None))), "a resource");
         assert_eq!(
@@ -2839,13 +4928,20 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-withdraw-question");
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
-        ws.wait_task(
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
+        ws.wait_request_task_at_version(
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::Decision,
             Some("which shape".to_owned()),
+            Request {
+                kind: AskKind::Clarification,
+                question: "which shape?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
             None,
         )
         .expect("the owner may wait its own row");
@@ -2886,7 +4982,7 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(sample_task("blocker", "proj"));
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -3002,11 +5098,15 @@ mod tests {
         ws.push_task(Task {
             status: TaskStatus::Waiting,
             waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: None,
                 on: None,
                 verification: true,
                 parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
@@ -3141,13 +5241,20 @@ mod tests {
         ws.push_task(sample_task("epic", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(sample_task_with_parent("t-1", Some("epic"), "proj"));
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
-        ws.wait_task(
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
+        ws.wait_request_task_at_version(
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::Decision,
             Some("which shape".to_owned()),
+            Request {
+                kind: AskKind::Clarification,
+                question: "which shape?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
             None,
         )
         .expect("the owner may wait its own row");
@@ -3175,13 +5282,20 @@ mod tests {
         ws.push_task(sample_task_with_parent("branch", Some("root"), "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(sample_task_with_parent("asked", Some("branch"), "proj"));
-        ws.claim_task("proj", &worker, Some(&TaskId::from("asked")), None).expect("claim");
-        ws.wait_task(
+        ws.claim_task("proj", &worker, &TaskId::from("asked")).expect("claim");
+        ws.wait_request_task_at_version(
             "proj",
             &TaskId::from("asked"),
             &worker,
-            WaitingKind::Decision,
             Some("which shape".to_owned()),
+            Request {
+                kind: AskKind::Clarification,
+                question: "which shape?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
             None,
         )
         .expect("the owner may wait its own row");
@@ -3264,6 +5378,10 @@ mod tests {
                 on: Some(TaskId::from("blocker")),
                 verification: false,
                 parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
@@ -3291,6 +5409,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-delete-foreign");
+        // The row's own project is loaded too: the evidence gate checks a
+        // completion against the project's repository.
+        ws.seed_test_project("elsewhere", "/tmp/tp-delete-foreign-e");
         ws.push_task(Task { verify: Some(Verify::User), ..sample_task("t-1", "elsewhere") });
         ws.update_task("elsewhere", &TaskId::from("t-1"), By::System, |task| {
             task.status = TaskStatus::Completed;
@@ -3317,6 +5438,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-close-scope");
+        ws.seed_test_project("elsewhere", "/tmp/tp-close-scope-e");
         // The tree being closed: a root and its child, both unparked.
         ws.push_task(sample_task("root", "proj"));
         ws.push_task(sample_task_with_parent("child", Some("root"), "proj"));
@@ -3432,7 +5554,7 @@ mod tests {
         let wait = moved.waiting_on.expect("the wait is the verify gate");
         assert_eq!(
             (wait.kind, wait.detail, wait.on, wait.verification, wait.parked),
-            (Some(WaitingKind::Decision), None, None, true, false),
+            (Some(WaitingKind::User), None, None, true, false),
             "the wait is the verify gate, which the board draws as approve / send back",
         );
         assert!(wait.since.is_some(), "the wait is stamped as it begins");
@@ -3468,6 +5590,526 @@ mod tests {
         let archived = archived_of(&ws, "proj");
         assert_eq!(archived.len(), 2, "the epic and its child went to the archive: {archived:?}");
         assert!(archived.iter().all(|t| t.archived_at.is_some()), "each row carries its stamp");
+    }
+
+    /// A terminal tree stands quiet past the retention window and then
+    /// leaves the live board on its own, stamped into the archive - the
+    /// rows were history the moment they ended, and the window is only how
+    /// long they stay readable before the archive takes them.
+    #[test]
+    fn a_terminal_tree_past_the_window_archives_itself() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-retain");
+        install_db(&ws, dir.path());
+        let mut root = sample_task("epic", "proj");
+        root.status = TaskStatus::Completed;
+        ws.push_task(root);
+        let mut child = sample_task_with_parent("child", Some("epic"), "proj");
+        child.status = TaskStatus::Completed;
+        ws.push_task(child);
+
+        let now = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(crate::tasks::RETENTION_SECS + 1);
+        let archived = ws.retain_terminal_rows(now);
+        assert_eq!(archived.len(), 2, "the whole tree leaves together: {archived:?}");
+        assert!(ws.tasks_for_project("proj").is_empty(), "nothing terminal is left on the board");
+        let kept = archived_of(&ws, "proj");
+        assert_eq!(kept.len(), 2, "both rows are in the archive: {kept:?}");
+        assert!(kept.iter().all(|t| t.archived_at == Some(now)), "each row carries the stamp");
+        assert!(kept.iter().all(|t| t.version == 1), "archiving is a write");
+        let (_, announced) = last_tasks_changed(&mut rx);
+        assert!(announced.is_empty(), "the board is told the row left: {announced:?}");
+    }
+
+    /// A row inside its window stays: the retention is a delay, not an
+    /// instant sweep.
+    #[test]
+    fn a_terminal_row_inside_its_window_stays() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-retain-window");
+        install_db(&ws, dir.path());
+        let mut done = sample_task("done", "proj");
+        done.status = TaskStatus::Completed;
+        done.updated_at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+        ws.push_task(done);
+
+        let now = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(100 + crate::tasks::RETENTION_SECS - 1);
+        assert!(ws.retain_terminal_rows(now).is_empty(), "the window has not passed");
+        assert_eq!(ws.tasks_for_project("proj").len(), 1, "the row is still live");
+        assert!(archived_of(&ws, "proj").is_empty(), "and not archived");
+    }
+
+    /// A terminal root with an open child is still a tree in play: the
+    /// archive never takes a parent out from under work that has not
+    /// ended.
+    #[test]
+    fn a_terminal_root_with_an_open_child_stays() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-retain-open");
+        install_db(&ws, dir.path());
+        let mut root = sample_task("epic", "proj");
+        root.status = TaskStatus::Canceled;
+        ws.push_task(root);
+        ws.push_task(sample_task_with_parent("child", Some("epic"), "proj"));
+
+        let now = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(crate::tasks::RETENTION_SECS + 1);
+        assert!(
+            ws.retain_terminal_rows(now).is_empty(),
+            "an open child holds the tree where it is",
+        );
+        assert_eq!(ws.tasks_for_project("proj").len(), 2, "nothing moved");
+    }
+
+    /// A completed child of a live epic stays: the epic's rollup reads it
+    /// until the epic itself closes.
+    #[test]
+    fn a_completed_child_of_a_live_epic_stays_live() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-retain-child");
+        install_db(&ws, dir.path());
+        ws.push_task(sample_task("epic", "proj"));
+        let mut child = sample_task_with_parent("child", Some("epic"), "proj");
+        child.status = TaskStatus::Completed;
+        ws.push_task(child);
+
+        let now = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(crate::tasks::RETENTION_SECS + 1);
+        assert!(ws.retain_terminal_rows(now).is_empty(), "the epic still holds its child");
+        assert_eq!(ws.tasks_for_project("proj").len(), 2, "nothing moved");
+    }
+
+    /// A restored tree comes back to the live board whole, with its stamp
+    /// cleared and the write recorded - the archive is a shelf, not a
+    /// grave.
+    #[test]
+    fn a_restored_tree_returns_to_the_live_board() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-restore");
+        install_db(&ws, dir.path());
+        ws.push_task(sample_task_with_parent("epic", None, "proj"));
+        ws.push_task(Task {
+            status: TaskStatus::Completed,
+            ..sample_task_with_parent("child", Some("epic"), "proj")
+        });
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.update_task("proj", &TaskId::from("epic"), By::Seat(lead), |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal");
+        assert!(ws.tasks_for_project("proj").is_empty(), "precondition: the tree is archived");
+
+        let restored = ws
+            .restore_task("proj", &TaskId::from("epic"))
+            .expect("no refusal")
+            .expect("the archive holds the tree");
+        assert_eq!(restored.id, TaskId::from("epic"));
+        assert_eq!(restored.archived_at, None, "the restored row is live again");
+        assert_eq!(ws.tasks_for_project("proj").len(), 2, "the whole tree came back");
+        assert!(archived_of(&ws, "proj").is_empty(), "and left the archive");
+        // A restored row is still terminal, so it belongs to the closed
+        // shelf (re-read when that toggle opens), never to the live set the
+        // frame carries: announcing it here re-added finished rows to the
+        // drawn lanes after every write.
+        let (_, announced) = last_tasks_changed(&mut rx);
+        assert!(announced.is_empty(), "no finished row rides the live set: {announced:?}");
+    }
+
+    #[test]
+    fn restoring_an_id_the_archive_does_not_hold_is_absent() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-restore-absent");
+        install_db(&ws, dir.path());
+
+        assert_eq!(
+            ws.restore_task("proj", &TaskId::from("nope")),
+            Ok(None),
+            "an id the archive does not hold is absent, not an error",
+        );
+    }
+
+    /// Absence is never success: a row with no evidence at all cannot
+    /// claim completion, whatever door it is moved through.
+    #[test]
+    fn a_completion_without_evidence_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-missing");
+        ws.push_task(Task { evidence: None, ..sample_task("t-1", "proj") });
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-1"), By::Seat(worker), |task| {
+                task.status = TaskStatus::Completed;
+            }),
+            Err(MoveError::EvidenceMissing),
+            "there is nothing to check, so the claim is refused",
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Pending,
+            "the row did not move",
+        );
+    }
+
+    /// An evidence block naming no artifact is the same absence wearing a
+    /// shape: refused, not accepted as a checked claim.
+    #[test]
+    fn a_completion_whose_evidence_names_nothing_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-empty");
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                excerpt: Some("looks fine to me".to_owned()),
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            }),
+            Err(MoveError::EvidenceMissing),
+            "an excerpt is the reader's evidence, never the claim",
+        );
+    }
+
+    /// A claim the repository cannot back refuses, naming the check's own
+    /// reason so the caller can fix the artifact.
+    #[test]
+    fn a_completion_with_unverifiable_evidence_is_refused_naming_the_check() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-refused");
+        ws.install_evidence_verifier(FixedVerifier::refusing(
+            "commit deadbeef does not exist in /tmp/tp-gate-refused",
+        ));
+        ws.push_task(sample_task("t-1", "proj"));
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("the artifact is not there");
+        assert_eq!(
+            refused,
+            MoveError::EvidenceUnverified(
+                "commit deadbeef does not exist in /tmp/tp-gate-refused".to_owned()
+            ),
+        );
+        assert!(
+            refused.to_string().contains("deadbeef"),
+            "the refusal carries the check's reason: {refused}",
+        );
+    }
+
+    /// A verified completion carries the stamp of the check that passed,
+    /// which is the wire's `verified at`.
+    #[test]
+    fn a_verified_completion_stamps_the_check() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-stamp");
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        ws.push_task(sample_task("t-1", "proj"));
+
+        let done = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(done.status, TaskStatus::Completed);
+        let evidence = done.evidence.expect("the claim rides the row");
+        assert!(evidence.verified_at.is_some(), "the passing check is stamped");
+        assert_eq!(evidence.problem, None);
+    }
+
+    /// The look gate follows the same rule: a verify=user row's completion
+    /// verifies before it parks, so the row the user is asked to approve
+    /// carries a claim forge has already checked.
+    #[test]
+    fn a_look_park_carries_verified_evidence() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-park");
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.verify = Some(Verify::User);
+        ws.push_task(row);
+
+        let parked = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(parked.status, TaskStatus::Waiting, "the look gate parks it");
+        assert!(
+            parked.evidence.as_ref().is_some_and(|evidence| evidence.verified_at.is_some()),
+            "the park carries a verified claim",
+        );
+    }
+
+    /// The approve door re-runs the check on the move: a repository that no
+    /// longer holds the artifact refuses the approve even though the park's
+    /// stamp is on the row.
+    #[test]
+    fn an_approve_reverifies_the_evidence() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-approve");
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.verify = Some(Verify::User);
+        ws.push_task(row);
+        ws.update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        ws.install_evidence_verifier(FixedVerifier::refusing("the commit was force-pushed away"));
+        let refused =
+            ws.approve_task("proj", &TaskId::from("t-1")).expect_err("the artifact is gone now");
+        assert_eq!(
+            refused,
+            MoveError::EvidenceUnverified("the commit was force-pushed away".to_owned()),
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Waiting,
+            "the row stays parked for the look",
+        );
+    }
+
+    /// A project that opted into the GitHub connector waits on its pull
+    /// requests too: an unchecked link is the wire's unknown, and unknown
+    /// does not complete a row.
+    #[test]
+    fn a_connector_project_refuses_a_completion_on_an_unchecked_pull_request() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link("https://example.invalid/pull/7"));
+        ws.push_task(row);
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("the connector has not seen the pull request");
+        assert!(
+            matches!(&refused, MoveError::EvidenceUnverified(reason)
+                if reason.contains("connector") && reason.contains("pull/7")),
+            "the refusal names the connector and the link: {refused}",
+        );
+    }
+
+    /// A fresh red check is a refusal of its own: a failing pull request
+    /// does not complete a row.
+    #[test]
+    fn a_connector_project_refuses_a_completion_on_failing_ci() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector-red",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link_checked("https://example.invalid/pull/7", Some("failing")));
+        ws.push_task(row);
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("red CI cannot complete a row");
+        assert!(
+            matches!(&refused, MoveError::EvidenceUnverified(reason)
+                if reason.contains("failing CI")),
+            "the refusal names the verdict: {refused}",
+        );
+    }
+
+    /// **Absence is never success**: a pull request whose CI rollup is
+    /// absent or unknown does not vouch for a completion, even with a fresh
+    /// check and a green-looking state.
+    #[test]
+    fn a_connector_project_refuses_a_completion_with_no_ci_verdict() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector-none",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link_checked("https://example.invalid/pull/7", None));
+        ws.push_task(row);
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("an absent CI verdict cannot complete a row");
+        assert!(
+            matches!(&refused, MoveError::EvidenceUnverified(reason)
+                if reason.contains("no CI verdict")),
+            "the refusal names the absence: {refused}",
+        );
+    }
+
+    /// A connector read that found the same answer again is not news: the
+    /// check's `at` moves so it stays fresh, while `changed_at` and the
+    /// row's version do not - so a steady connector neither refuses a live
+    /// agent's versioned write nor re-fires the new-input chase.
+    #[test]
+    fn an_unchanged_connector_read_keeps_changed_at_and_the_version() {
+        let epoch =
+            |secs: u64| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let prior = LinkCheck {
+            at: epoch(1_000),
+            changed_at: Some(epoch(900)),
+            state: Some("open".to_owned()),
+            head: Some("abc123".to_owned()),
+            ci: Some("passing".to_owned()),
+            problem: None,
+        };
+        let same = crate::env::git_diff::PullRequestState {
+            state: Some("open".to_owned()),
+            head: Some("abc123".to_owned()),
+            ci: Some("passing".to_owned()),
+            problem: None,
+        };
+        let (check, differs) = merge_check(Some(&prior), &same, epoch(2_000));
+        assert!(!differs, "the same answer is not news");
+        assert_eq!(check.at, epoch(2_000), "the freshness stamp moves");
+        assert_eq!(check.changed_at, Some(epoch(900)), "and the change stamp does not");
+
+        let moved = crate::env::git_diff::PullRequestState {
+            state: same.state.clone(),
+            head: Some("def456".to_owned()),
+            ci: same.ci.clone(),
+            problem: None,
+        };
+        let (check, differs) = merge_check(Some(&prior), &moved, epoch(2_000));
+        assert!(differs, "a new head is news");
+        assert_eq!(check.changed_at, Some(epoch(2_000)), "and stamps the change");
+
+        let (first, differs) = merge_check(None, &same, epoch(2_000));
+        assert!(differs, "a first read is always news");
+        assert_eq!(first.changed_at, Some(epoch(2_000)));
+    }
+
+    /// A fresh green check lets the completion through, and the same row
+    /// with no connector is not asked about its link at all.
+    #[test]
+    fn a_connector_project_completes_on_a_fresh_green_check() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector-green",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link_checked("https://example.invalid/pull/7", Some("passing")));
+        ws.push_task(row);
+
+        let done = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(done.status, TaskStatus::Completed);
+
+        // The control: the same unchecked link in a project with no
+        // connector completes, because nothing there asks for a PR.
+        let (plain, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        plain.seed_test_project("proj", "/tmp/tp-connector-none");
+        plain.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link("https://example.invalid/pull/7"));
+        plain.push_task(row);
+        plain
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("a self-contained project asks for no pull request");
+    }
+
+    /// An old check is not fresh: a cached verdict is evidence only while
+    /// it is current, so a link checked past the window refuses.
+    #[test]
+    fn an_expired_connector_check_is_not_evidence() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector-stale",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        let mut link = pr_link_checked("https://example.invalid/pull/7", Some("passing"));
+        if let Some(check) = link.last_check.as_mut() {
+            check.at = SystemTime::now()
+                - std::time::Duration::from_secs(crate::tasks::CONNECTOR_REFRESH_SECS + 1);
+        }
+        row.links.push(link);
+        ws.push_task(row);
+
+        assert!(
+            matches!(
+                ws.update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                    task.status = TaskStatus::Completed;
+                }),
+                Err(MoveError::EvidenceUnverified(reason)) if reason.contains("connector")
+            ),
+            "an expired check is refused",
+        );
+    }
+
+    /// The default is off: a project with no connector refreshes nothing,
+    /// so no child runs and no link moves.
+    #[tokio::test]
+    async fn a_project_without_a_connector_refreshes_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-no-connector");
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link("https://example.invalid/pull/7"));
+        ws.push_task(row);
+
+        ws.refresh_connectors(SystemTime::now()).await;
+        let stored = &ws.tasks_for_project("proj")[0];
+        assert_eq!(stored.links[0].last_check, None, "nothing checked the link");
+        assert_eq!(stored.version, 0, "and nothing was written");
     }
 
     #[test]
@@ -3517,7 +6159,7 @@ mod tests {
         install_db(&ws, dir.path());
         ws.push_task(sample_task("t-1", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.update_task("proj", &TaskId::from("t-1"), By::Seat(worker.clone()), |task| {
             task.status = TaskStatus::Completed;
         })

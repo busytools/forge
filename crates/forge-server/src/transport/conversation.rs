@@ -36,9 +36,11 @@
 //! what that costs is bounded by the cap below rather than by the transcript.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::SystemTime;
 
-use forge_primitives::{Message, SessionSlot};
+use forge_primitives::{ContentBlock, Message, SessionSlot};
 // The window this copy is kept in. The fan-out's ring is sized from the same
 // caps, because a ring exists to fill a copy that is behind; the ceilings' why,
 // and what the drop costs, are stated there.
@@ -468,12 +470,38 @@ fn live_of_seed(messages: &[Message]) -> bool {
 /// So the mutex is paired with a condvar: a reader waits out a fold in
 /// progress rather than looking at it. The wait is on the reader's own
 /// blocking task, and it is bounded by one render.
+/// One agent action the board's audit sample may draw: a tool call inside
+/// the window, named with the words it did the thing with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttentionAction {
+    pub at: SystemTime,
+    pub seat: String,
+    pub tool: String,
+    pub detail: String,
+}
+
+/// One project's cached action list: the version it was computed at, the
+/// window it was computed for, and the actions, newest first.
+#[derive(Clone, Default)]
+struct AttentionCache {
+    version: u64,
+    since: u64,
+    actions: Vec<AttentionAction>,
+}
+
 pub struct Held {
     conversation: Mutex<Conversation>,
     folded: Condvar,
     /// What this copy weighs, kept beside the conversation so the total
     /// budget reads it without locking the seat.
     bytes: std::sync::atomic::AtomicUsize,
+    /// How many frames have landed in this copy, read without locking it.
+    ///
+    /// **A content version rather than a weight**: a same-length frame, or a
+    /// trim and an append that net to the same bytes, leaves the weight
+    /// unchanged while the content moves, so a cache keyed on weight serves
+    /// stale rows. This moves on every append.
+    content_version: std::sync::atomic::AtomicU64,
     /// When this seat was last touched, for the total budget's LRU.
     ///
     /// **A monotonic counter rather than a clock**, so two seats touched in
@@ -488,6 +516,7 @@ impl Held {
             conversation: Mutex::new(conversation),
             folded: Condvar::new(),
             bytes: std::sync::atomic::AtomicUsize::new(bytes),
+            content_version: std::sync::atomic::AtomicU64::new(0),
             last_touch: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -495,6 +524,17 @@ impl Held {
     /// What this copy weighs, without locking the seat.
     pub fn bytes(&self) -> usize {
         self.bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many frames have landed in this copy, without locking the seat.
+    pub fn content_version(&self) -> u64 {
+        self.content_version.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Say a frame landed: the content-version half of the board sample's
+    /// cache key.
+    fn bump_content(&self) {
+        self.content_version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// When this seat was last touched, without locking the seat.
@@ -671,6 +711,14 @@ impl Drop for Folding<'_> {
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Held>>>,
+    /// The board's audit-sample actions, per project, cached by the held
+    /// copies' own version.
+    ///
+    /// **A board read must not walk every seat's transcript.** The walk is
+    /// O(held messages) and a board read is frequent; every append moves the
+    /// held copy's weight, so the labels and weights together are a version,
+    /// and an unchanged version answers from here without locking a seat.
+    attention_cache: Mutex<HashMap<String, AttentionCache>>,
     /// How many bytes of conversation the held copies may total, or `0` for
     /// no total budget.
     ///
@@ -1100,6 +1148,78 @@ impl Conversations {
     /// **A seat with no copy is touched too**, in the map the budget reads for
     /// ring-only seats: a read of an evicted seat is a use, and without the
     /// mark the next eviction would take the seat it just served.
+    /// Every seat whose conversation this server holds a copy of. The
+    /// board's audit sample walks these; nothing else enumerates them.
+    pub fn held_slots(&self) -> Vec<SessionSlot> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).keys().cloned().collect()
+    }
+
+    /// The agent actions `project` performed since `since`, newest first,
+    /// for the board's audit sample.
+    ///
+    /// **Cached by the held copies' version**: the labels and weights of the
+    /// project's held seats stand in for their content, because a copy only
+    /// grows when a frame is folded into it. A board read with nothing new
+    /// answers without locking a single seat's conversation.
+    pub fn attention_actions(&self, project: &str, since: SystemTime) -> Vec<AttentionAction> {
+        let since_secs = since.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |it| it.as_secs());
+        let holders: Vec<(SessionSlot, Arc<Held>)> = {
+            let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            held.iter()
+                .filter(|(slot, _)| slot.project() == project)
+                .map(|(slot, held)| (slot.clone(), Arc::clone(held)))
+                .collect()
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (slot, held) in &holders {
+            slot.label().hash(&mut hasher);
+            // The copy's identity as well as its content version: a reseed
+            // replaces the copy, so a fresh one at the same version is still
+            // a different conversation.
+            std::ptr::from_ref(Arc::as_ref(held)).hash(&mut hasher);
+            held.content_version().hash(&mut hasher);
+        }
+        let version = hasher.finish();
+        if let Some(cache) =
+            self.attention_cache.lock().unwrap_or_else(PoisonError::into_inner).get(project)
+            && cache.version == version
+            && cache.since == since_secs
+        {
+            return cache.actions.clone();
+        }
+        let mut actions = Vec::new();
+        for (slot, held) in &holders {
+            let conversation = held.lock();
+            for message in conversation.messages() {
+                let Message::Assistant { message, timestamp, .. } = message else { continue };
+                let Some(at) = timestamp.as_deref().and_then(parse_rfc3339) else { continue };
+                if at <= since {
+                    continue;
+                }
+                for block in &message.content {
+                    if let ContentBlock::ToolUse { name, input, .. } = block
+                        && !is_board_tool(name)
+                    {
+                        actions.push(AttentionAction {
+                            at,
+                            seat: slot.label().to_owned(),
+                            tool: name.clone(),
+                            detail: tool_detail(input),
+                        });
+                    }
+                }
+            }
+        }
+        actions.sort_by_key(|action| std::cmp::Reverse(action.at));
+        // The roster bounds this map: one entry per project the board is
+        // read for, replaced in place on every change.
+        self.attention_cache.lock().unwrap_or_else(PoisonError::into_inner).insert(
+            project.to_owned(),
+            AttentionCache { version, since: since_secs, actions: actions.clone() },
+        );
+        actions
+    }
+
     pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
         let held =
             self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone);
@@ -1302,6 +1422,7 @@ impl Conversations {
                         conversation.set_watermark(seq);
                     }
                     delta = held.reweigh(&conversation);
+                    held.bump_content();
                 }
             }
             // The delivery-failure notice is a row a CONNECTION forges per
@@ -1368,6 +1489,11 @@ impl Conversations {
                 if let Some(occupant) = occupant {
                     conversation.set_occupant(Some(occupant.clone()));
                 }
+                // **A reseed is a new conversation in the same copy**: the
+                // board sample's cache keys on this copy's identity and
+                // version, so without the bump it would serve the previous
+                // conversation's actions after a resume or a reconnect.
+                held.bump_content();
                 held.reweigh(&conversation)
             };
             // A reader waiting for a copy of another occupant is waiting for
@@ -1393,6 +1519,42 @@ impl Conversations {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// The board's READS are the lead polling the board, not actions nobody
+/// escalated, so the sample leaves them out; a board WRITE - an approve, an
+/// answer, a cancel - is a judgement call and samples like any other.
+fn is_board_tool(name: &str) -> bool {
+    let board = name.starts_with("mcp__forge__tasks__") || name.starts_with("tasks__");
+    board && matches!(name.rsplit("__").next(), Some("list" | "get" | "policy"))
+}
+
+/// One tool call's own words: its description, command, path or prompt,
+/// cut to a line a reader can scan.
+fn tool_detail(input: &serde_json::Value) -> String {
+    for key in ["description", "command", "file_path", "path", "prompt", "subject"] {
+        if let Some(text) = input.get(key).and_then(serde_json::Value::as_str) {
+            let line: String = text.lines().next().unwrap_or_default().trim().to_owned();
+            if !line.is_empty() {
+                return truncate(&line, 120);
+            }
+        }
+    }
+    String::new()
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(max).collect();
+    format!("{cut}...")
+}
+
+fn parse_rfc3339(stated: &str) -> Option<SystemTime> {
+    time::OffsetDateTime::parse(stated, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .map(SystemTime::from)
 }
 
 #[cfg(test)]
@@ -2608,6 +2770,82 @@ mod tests {
 
     fn a_chat_for(slot: &SessionSlot, text: &str) -> SessionUpdate {
         SessionUpdate::ChatAppended { key: slot.clone(), msg: a_frame(text), source: None }
+    }
+
+    /// A frame carrying one tool call, so the board's sample has an action
+    /// to name.
+    fn a_tool_frame(command: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "type": "message",
+                "role": "assistant",
+                "model": "a-model",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call",
+                    "name": "Bash",
+                    "input": { "command": command },
+                }],
+                "stop_reason": "tool_use",
+            },
+            "session_id": "s",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }))
+        .expect("a well-formed assistant turn")
+    }
+
+    /// **The sample's cache moves on a same-weight frame.** A version, not a
+    /// byte weight, is the key: a frame that replaces the content without
+    /// changing the copy's weight would otherwise serve the old action.
+    #[test]
+    fn the_attention_sample_moves_when_a_same_weight_frame_lands() {
+        let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let conversations = Conversations::new();
+        conversations.apply(&a_connect_for(&seat, vec![a_tool_frame("aa")]), None);
+        let first = conversations.attention_actions("proj", SystemTime::UNIX_EPOCH);
+        assert!(
+            first.iter().any(|action| action.detail == "aa"),
+            "the first action is sampled: {first:?}",
+        );
+        conversations.apply(
+            &SessionUpdate::ChatAppended {
+                key: seat.clone(),
+                msg: a_tool_frame("bb"),
+                source: None,
+            },
+            None,
+        );
+        let second = conversations.attention_actions("proj", SystemTime::UNIX_EPOCH);
+        assert!(
+            second.iter().any(|action| action.detail == "bb"),
+            "the same-weight frame's action is sampled, not the stale one: {second:?}",
+        );
+    }
+
+    /// **A reseed is a new conversation in the same copy.** The cache keys on
+    /// the copy's identity and content version, so a reconnect that replaces
+    /// the history must move the version - otherwise the sample serves the
+    /// previous conversation's actions until a frame lands.
+    #[test]
+    fn the_attention_sample_moves_after_a_reseed() {
+        let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let conversations = Conversations::new();
+        conversations.apply(&a_connect_for(&seat, vec![a_tool_frame("aa")]), None);
+        let first = conversations.attention_actions("proj", SystemTime::UNIX_EPOCH);
+        assert!(first.iter().any(|action| action.detail == "aa"), "{first:?}");
+        // The same weight, a different conversation: a resume's history.
+        conversations.apply(&a_connect_for(&seat, vec![a_tool_frame("bb")]), None);
+        let second = conversations.attention_actions("proj", SystemTime::UNIX_EPOCH);
+        assert!(
+            second.iter().any(|action| action.detail == "bb"),
+            "the reseeded conversation is sampled: {second:?}",
+        );
+        assert!(
+            !second.iter().any(|action| action.detail == "aa"),
+            "the previous conversation's action is gone: {second:?}",
+        );
     }
 
     /// One seat's copy weighs this much, measured rather than assumed.

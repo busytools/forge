@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use forge_primitives::git_diff::LayerState;
@@ -26,7 +27,7 @@ use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, U
 use forge_workspace::bench::{
     BenchResult, BenchState, ReadAloudState, SpeakingBenchResult, SpeakingBenchState,
 };
-use forge_workspace::board::{BoardRow, FleetRow};
+use forge_workspace::board::FleetRow;
 use forge_workspace::catalogue::{CatalogueCheck, CatalogueRow, InUseModel, ModelUpdate};
 use forge_workspace::env::git_diff::content::{DiffContent, FileContent, scan as scan_content};
 use forge_workspace::env::git_diff::file::{merge_base, read_file_lines};
@@ -241,6 +242,27 @@ pub struct BoardWire {
     pub projects: Vec<ProjectBoardWire>,
 }
 
+/// The board's closed view, for the page's archived toggle: every
+/// project's terminal rows, the live ones first and the archive after
+/// them. `archived_at` says which shelf a row is on, and `None` means it
+/// has ended but has not reached the archive yet - or was just restored.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ArchivedWire {
+    pub projects: Vec<ProjectArchivedWire>,
+    /// The archive read failed: the toggle draws the refusal rather than an
+    /// empty shelf, which would read as "nothing has ended" and be believed.
+    #[serde(default)]
+    pub refused: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectArchivedWire {
+    pub project: ProjectIdentity,
+    pub rows: Vec<forge_primitives::tasks::Task>,
+}
+
 /// One project's identity: the key a patch entry places a project by, and all
 /// a board row needs to place it.
 ///
@@ -258,12 +280,19 @@ pub struct ProjectIdentity {
 #[serde(rename_all = "snake_case")]
 pub struct ProjectBoardWire {
     pub project: ProjectIdentity,
-    /// The project's live rows, with what the board derives on each:
-    /// worked time, ages, and the marks. Computed in the workspace's board
-    /// module as of the read's own instant, and the client advances the
-    /// time-derived figures from each row's timestamps and that instant
-    /// (`client/src/board/clock.ts`) - a watched board ticks with no read.
-    pub rows: Vec<forge_workspace::board::BoardRow>,
+    /// The project's live rows as the window draws them: the record
+    /// without its prose or history, plus what the board derives on each -
+    /// worked time, ages, whether the owner is live, and the marks.
+    ///
+    /// **The bulk read carries only the window's fields.** A row's `detail`
+    /// brief and its transition history load on demand (`tasks__get`), so the
+    /// wire is bounded by its row count rather than by how much each row has
+    /// accumulated. The server still folds each row's whole history when it
+    /// builds the board; the trim is the wire's, not the store's. The client
+    /// advances the time-derived figures from each row's timestamps and the
+    /// read's own instant (`client/src/board/clock.ts`) - a watched board
+    /// ticks with no read.
+    pub rows: Vec<Value>,
     /// The schedules this project holds.
     ///
     /// A view draws its SCHEDULES section from these, and nothing on
@@ -277,6 +306,10 @@ pub struct ProjectBoardWire {
     /// [`ConnectorsWire`] - which carries the liveness facts, which belong to
     /// the server and the workspace rather than to a project.
     pub connectors: ProjectConnectorsWire,
+    /// The window's attention facts: `last_look`, `checked_at`, `agents`,
+    /// the `delta` the digest strip counts, and the rotating `sample` of
+    /// unasked agent actions with its `sampled`/`total` pair.
+    pub attention: Value,
 }
 
 /// One seat's row: the surface's own [`AgentRow`], plus the read that is per
@@ -2384,7 +2417,8 @@ pub(crate) async fn encode_subject_timed(
     let mut timings = OpenTimings::default();
     match subject {
         Subject::Home => Ok((serde_json::to_value(home(state, surface).await)?, timings)),
-        Subject::Board => Ok((serde_json::to_value(board(surface))?, timings)),
+        Subject::Board => Ok((serde_json::to_value(board(state))?, timings)),
+        Subject::Archived => Ok((serde_json::to_value(archived(surface))?, timings)),
         Subject::Session(slot) => {
             let at = std::time::Instant::now();
             let roster = surface.roster();
@@ -2591,22 +2625,155 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
 /// No filesystem read and no seat hold: the rows, schedules and connector
 /// sets are the workspace's own state, which is what makes a board read
 /// cheap next to the home read it left (#2517).
-fn board(surface: &ViewSurface) -> BoardWire {
+fn board(state: &TransportState) -> BoardWire {
+    let surface = &state.surface;
     let roster = surface.roster();
+    let now = SystemTime::now();
     let mut projects = Vec::with_capacity(roster.projects.len());
     for project in &roster.projects {
         let subscribed = surface.connectors(Some(&project.name));
         projects.push(ProjectBoardWire {
             project: ProjectIdentity { org: project.org.clone(), name: project.name.clone() },
-            rows: surface.board_rows(&project.name),
+            rows: surface.board_rows(&project.name).iter().map(window_row).collect(),
             crons: roster.crons_for_project(&project.name),
             connectors: ProjectConnectorsWire {
                 gotify: subscribed.gotify.subscriptions,
                 slack: subscribed.slack.subscriptions,
             },
+            attention: attention(state, &project.name, now),
         });
     }
     BoardWire { projects }
+}
+
+/// How many of the window's unasked agent actions the audit sample draws.
+const SAMPLE_SIZE: usize = 3;
+/// How often the sample's window moves on, so a returning reader sees a
+/// different few.
+const SAMPLE_ROTATE_SECS: u64 = 300;
+
+/// The window a board never looked at samples over.
+const SAMPLE_WINDOW_SECS: u64 = 24 * 3_600;
+
+/// When a never-looked-at project's sample starts, floored to the hour.
+///
+/// **A cache keyed on a moving window never hits**: `now - 24h` differs on
+/// every read, so the sample's walk would lock every held seat on every
+/// board read for a project nobody has looked at. Floored to the hour, the
+/// window moves in steps a cache can answer from.
+fn sample_since(now: SystemTime) -> SystemTime {
+    let since = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |age| age.as_secs());
+    let start = since.saturating_sub(SAMPLE_WINDOW_SECS);
+    SystemTime::UNIX_EPOCH + Duration::from_secs(start - start % 3_600)
+}
+
+/// **The window's attention facts.** When the board was last looked at and
+/// what changed since (the digest strip), how many seats acted inside that
+/// window, and a rotating sample of a few agent actions the leads did not
+/// escalate - tool calls and judgement-bearing acts, named with their
+/// commands and paths, because that is what supervision reads.
+fn attention(state: &TransportState, project: &str, now: SystemTime) -> Value {
+    let surface = &state.surface;
+    let (last_look, delta) = surface.board_attention(project);
+    let since = last_look.unwrap_or_else(|| sample_since(now));
+    // The held copies' walk is the expensive part, and it is the
+    // conversation set's to answer: it caches by the copies' version, so a
+    // board read with nothing new touches no seat.
+    let actions = state.conversations.attention_actions(project, since);
+    let total = actions.len();
+    let sampled = total.min(SAMPLE_SIZE);
+    // **Rotating, not a fixed head**: a sample pinned to the newest three
+    // would show the same calls every look. The offset walks with the
+    // clock so the window's list changes underneath a reader who keeps
+    // coming back.
+    let offset = if total == 0 {
+        0
+    } else {
+        let slots = u64::try_from(total).unwrap_or(1);
+        let passed = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+        usize::try_from((passed / SAMPLE_ROTATE_SECS) % slots).unwrap_or(0)
+    };
+    let rows: Vec<Value> = (0..sampled)
+        .map(|index| {
+            let action = &actions[(offset + index) % total];
+            serde_json::json!({
+                "seat": action.seat,
+                "tool": action.tool,
+                "detail": action.detail,
+                "at": rfc3339(action.at),
+            })
+        })
+        .collect();
+    let agents = actions
+        .iter()
+        .map(|action| action.seat.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    serde_json::json!({
+        "last_look": last_look.map(rfc3339),
+        "checked_at": rfc3339(now),
+        "agents": agents,
+        "delta": delta,
+        "sample": { "rows": rows, "sampled": sampled, "total": total },
+    })
+}
+
+fn rfc3339(at: SystemTime) -> String {
+    time::OffsetDateTime::from(at)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_owned())
+}
+
+/// One row as the board's bulk read carries it.
+///
+/// The record minus its `detail` brief and its history, which are the two
+/// unbounded parts: the brief is prose a drawer reads on open, and the
+/// history is capped at twenty transitions per row yet still what makes a
+/// wide board heavy. Both are `tasks__get`'s, and a row whose detail is
+/// dropped reads it back from there.
+fn window_row(row: &forge_workspace::board::BoardRow) -> Value {
+    let mut value = serde_json::to_value(row).unwrap_or(Value::Null);
+    // **The acknowledged-but-forgotten state is a fact on the row**, derived
+    // from the acknowledgement the row already keeps and the one threshold
+    // the drive names at; a client reads it rather than keeping a timer.
+    let forgotten = row.task.waiting_on.as_ref().and_then(|wait| wait.acknowledged_at).is_some_and(
+        |acknowledged| {
+            SystemTime::now()
+                .duration_since(acknowledged)
+                .is_ok_and(|age| age.as_secs() >= forge_workspace::drive::FORGOTTEN_ACK_SECS)
+        },
+    );
+    if let Some(object) = value.as_object_mut() {
+        object.remove("history");
+        object.remove("history_total");
+        object.insert("forgotten".to_owned(), Value::Bool(forgotten));
+        if let Some(task) = object.get_mut("task").and_then(Value::as_object_mut) {
+            task.remove("detail");
+        }
+    }
+    value
+}
+
+/// The board's closed view: one project's terminal rows, live first and
+/// archived after.
+fn archived(surface: &ViewSurface) -> ArchivedWire {
+    let roster = surface.roster();
+    let mut projects = Vec::with_capacity(roster.projects.len());
+    let mut refused = None;
+    for project in &roster.projects {
+        match surface.archived_rows(&project.name) {
+            Ok(rows) => projects.push(ProjectArchivedWire {
+                project: ProjectIdentity { org: project.org.clone(), name: project.name.clone() },
+                rows,
+            }),
+            // One store answers every project, so one failure is the read's.
+            Err(error) => {
+                refused = Some(format!("the task archive could not be read: {error}"));
+                break;
+            }
+        }
+    }
+    ArchivedWire { projects, refused }
 }
 
 /// How long an encode waits for the fold loop to catch up before filling the
@@ -3332,7 +3499,10 @@ pub enum BoardProjectEntry {
 #[serde(rename_all = "snake_case")]
 pub struct ProjectBoardPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rows: Option<Vec<PatchEntry<TaskId, BoardRow>>>,
+    // **A row crosses as the window's own JSON**, never as the whole
+    // `BoardRow`: the bulk read strips the brief and history, and a patch
+    // that carried them back would undo the trim on every move.
+    pub rows: Option<Vec<PatchEntry<TaskId, Value>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crons: Option<Vec<forge_primitives::CronEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3472,7 +3642,7 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
         Subject::Session(_) | Subject::DictateModels | Subject::Extensions => {
             whole_fields(old, new)
         }
-        // **Two subjects have no patch, for their own reasons.**
+        // **Three subjects have no patch, for their own reasons.**
         //
         // A take is not a record: its frames are the deltas, and a subscribe
         // is answered with nothing to keep.
@@ -3481,7 +3651,13 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
         // transcript being written, so nothing ever marks `Usage` dirty; its
         // subscription is one scan on the ask and its version never moves. A
         // patch type for it would be dead code, which is why there is none.
-        Subject::Dictate | Subject::Usage => None,
+        //
+        // **The closed view is read once per opening of its toggle.** The
+        // page asks when the toggle opens and releases the subject with the
+        // answer, so nothing stays subscribed to patch; a task write reaches
+        // that reader through the board's own store, and the next opening
+        // reads the shelf again.
+        Subject::Dictate | Subject::Usage | Subject::Archived => None,
     }
 }
 
@@ -3504,7 +3680,7 @@ const SEAT_PATCH_FIELDS: &[&str] =
 /// record per connection buys nothing but megabytes - the conversation and the
 /// file index are never patched, and a large seat is tens of megabytes held
 /// once per connection that reads it. The other subjects' whole-field patches
-/// can carry any field, so their projection is the record itself; the two
+/// can carry any field, so their projection is the record itself; the three
 /// subjects with no patch at all project to null and their base costs nothing.
 pub(crate) fn patch_projection(subject: &Subject, record: &Value) -> Value {
     match subject {
@@ -3520,7 +3696,7 @@ pub(crate) fn patch_projection(subject: &Subject, record: &Value) -> Value {
             }
             Value::Object(projected)
         }
-        Subject::Dictate | Subject::Usage => Value::Null,
+        Subject::Dictate | Subject::Usage | Subject::Archived => Value::Null,
         _ => record.clone(),
     }
 }
@@ -3781,16 +3957,23 @@ mod patches {
                 projects
                     .into_iter()
                     .map(|project| {
-                        let ProjectBoardWire { project: identity, rows, crons, connectors } =
+                        let ProjectBoardWire { project: identity, rows, crons, connectors, .. } =
                             project;
                         BoardProjectEntry::Set {
                             identity,
                             board: ProjectBoardPatch {
                                 rows: Some(
                                     rows.into_iter()
-                                        .map(|row| PatchEntry::Set {
-                                            id: row.task.id.clone(),
-                                            record: row,
+                                        .map(|row| {
+                                            // **A row with no id is a sample fault, not
+                                            // an empty board**: dropping it here would
+                                            // let the compile-proof pass on zero rows.
+                                            let id = row
+                                                .get("task")
+                                                .and_then(|task| task.get("id"))
+                                                .and_then(Value::as_str)
+                                                .expect("a sampled board row carries its task id");
+                                            PatchEntry::Set { id: TaskId::from(id), record: row }
                                         })
                                         .collect(),
                                 ),
@@ -3939,6 +4122,9 @@ mod patches {
                 Subject::DictateModels => "dictate models patch",
                 Subject::Extensions => "extensions patch",
                 Subject::Dictate => "no record: its own frames are the deltas",
+                Subject::Archived => {
+                    "no patch: read once per opening, and nothing stays subscribed"
+                }
             }
         }
         let _: fn(&Subject) -> &'static str = carries;
@@ -5943,7 +6129,15 @@ mod tests {
                 }
             }
             Value::Array(items) => items.iter_mut().for_each(|item| normalise(item, forms)),
-            Value::Object(fields) => fields.values_mut().for_each(|field| normalise(field, forms)),
+            Value::Object(fields) => {
+                // The board's attention block carries the read's own clock:
+                // a fixture pinning it would fail on the next run.
+                if fields.contains_key("checked_at") {
+                    fields
+                        .insert("checked_at".to_owned(), Value::String("<checked-at>".to_owned()));
+                }
+                fields.values_mut().for_each(|field| normalise(field, forms));
+            }
             _ => {}
         }
     }
@@ -5964,10 +6158,11 @@ mod tests {
                 active_form: None,
                 detail: None,
                 status: forge_primitives::tasks::TaskStatus::Waiting,
+                kind: forge_primitives::tasks::TaskKind::Finite,
                 owner: Some(forge_primitives::SessionSlot::worker("TestOrg", "proj", "w1")),
                 parent: None,
                 waiting_on: Some(forge_primitives::tasks::Waiting {
-                    kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+                    kind: Some(forge_primitives::tasks::WaitingKind::User),
                     detail: Some("sign this off".to_owned()),
                     on: None,
                     verification: false,
@@ -5975,14 +6170,21 @@ mod tests {
                     since: Some(
                         std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5),
                     ),
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 }),
+                request: None,
                 estimate: None,
+                cadence: None,
                 rank: None,
                 verify: None,
                 attested: None,
                 reserved: None,
                 links: Vec::new(),
-                attempt: 0,
+                evidence: None,
+                version: 0,
                 archived_at: None,
                 created_at: std::time::SystemTime::UNIX_EPOCH,
                 // An edit after the wait began must not move the item's date.
@@ -6009,6 +6211,77 @@ mod tests {
             item["at"],
             serde_json::json!({ "secs_since_epoch": 5, "nanos_since_epoch": 0 }),
             "the moment the wait began",
+        );
+    }
+
+    /// **The audit sample names the agent actions nobody escalated**, with
+    /// the seat, the tool and its own words, counts the seats that acted,
+    /// and leaves the board's own tools out - they are the asks
+    /// themselves.
+    #[tokio::test]
+    async fn the_board_sample_names_unasked_agent_actions() {
+        use forge_primitives::Message;
+
+        let dir = fixture_dir();
+        let state = fixture_state(dir.path()).await;
+        let at = rfc3339(SystemTime::now());
+        let message = |tool: &str, input: Value| {
+            serde_json::from_value::<Message>(serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "id": "m",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "a-model",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": format!("call-{tool}"),
+                        "name": tool,
+                        "input": input,
+                    }],
+                    "stop_reason": "tool_use",
+                },
+                "session_id": "s",
+                "timestamp": at,
+            }))
+            .expect("a well-formed assistant turn")
+        };
+        let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
+        state.conversations.insert(
+            &seat,
+            crate::transport::conversation::Conversation::new(
+                vec![
+                    message("Bash", serde_json::json!({ "command": "just check" })),
+                    message("Write", serde_json::json!({ "file_path": "src/lib.rs" })),
+                    message("mcp__forge__tasks__list", serde_json::json!({})),
+                    message("mcp__forge__tasks__update", serde_json::json!({ "id": "t-1" })),
+                ],
+                0,
+                0,
+            ),
+        );
+
+        let encoded = encode_subject(&state, &Subject::Board).await.expect("encode");
+        let attention = &encoded["projects"][0]["attention"];
+        assert_eq!(attention["agents"], 1, "one seat acted: {attention}");
+        assert_eq!(
+            attention["sample"]["total"], 3,
+            "the board's read is left out; its write is a judgement call and samples"
+        );
+        assert_eq!(attention["sample"]["sampled"], 3, "all of them, under the sample size");
+        let rows = attention["sample"]["rows"].as_array().expect("rows");
+        assert!(rows.iter().any(|row| row["tool"] == "Bash" && row["detail"] == "just check"));
+        assert!(
+            rows.iter().any(|row| row["tool"] == "Write" && row["detail"] == "src/lib.rs"),
+            "a path names the action: {attention}",
+        );
+        assert!(
+            rows.iter().all(|row| row["tool"] != "mcp__forge__tasks__list"),
+            "the board's reads are the lead polling itself: {attention}",
+        );
+        assert!(
+            rows.iter().any(|row| row["tool"] == "mcp__forge__tasks__update"),
+            "the board's writes are judgement calls and sample: {attention}",
         );
     }
 
@@ -6166,6 +6439,86 @@ mod tests {
         );
     }
 
+    /// **The bulk board carries only the window's fields.** A row's brief and
+    /// its history are the two unbounded parts, and both are `tasks__get`'s:
+    /// the board read must not grow with how much each row has accumulated.
+    #[tokio::test]
+    async fn a_board_row_carries_no_brief_and_no_history() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.add_task("TestOrg", "proj", "a live row", "w1", None).expect("the task is seeded");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let board = encode_subject(&state, &Subject::Board).await.expect("encode");
+        let row = &board["projects"][0]["rows"][0];
+        assert!(row.get("history").is_none(), "the history loads on demand: {row}");
+        assert!(row.get("history_total").is_none(), "and so does its count: {row}");
+        assert!(row["task"].get("detail").is_none(), "the brief loads on demand: {row}");
+        assert!(row["task"]["subject"].is_string(), "the row itself is there: {row}");
+        assert!(row["marks"].is_object(), "with the server's own marks: {row}");
+    }
+
+    /// The closed view is its own subject: the bulk board drops a terminal
+    /// row at once, and the archived read carries it with the shelf it is
+    /// on. A page that never opens the toggle pays for none of it.
+    #[tokio::test]
+    async fn the_archived_subject_carries_the_rows_the_board_drops() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.add_task("TestOrg", "proj", "a live row", "w1", None).expect("the task is seeded");
+        let now = std::time::SystemTime::now();
+        fleet.seed_task(forge_primitives::tasks::Task {
+            id: forge_primitives::tasks::TaskId::from("an ended row"),
+            project_name: "proj".to_owned(),
+            subject: "an ended row".to_owned(),
+            active_form: None,
+            detail: None,
+            status: forge_primitives::tasks::TaskStatus::Completed,
+            kind: forge_primitives::tasks::TaskKind::Finite,
+            owner: None,
+            parent: None,
+            waiting_on: None,
+            request: None,
+            estimate: None,
+            cadence: None,
+            rank: None,
+            verify: None,
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            evidence: None,
+            version: 0,
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+        });
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let board = encode_subject(&state, &Subject::Board).await.expect("encode");
+        assert_eq!(board["projects"][0]["rows"].as_array().map(Vec::len), Some(1), "{board}");
+
+        let archived = encode_subject(&state, &Subject::Archived).await.expect("encode");
+        let rows = archived["projects"][0]["rows"].as_array().expect("the rows");
+        assert_eq!(rows.len(), 1, "the closed view carries the ended row: {archived}");
+        assert_eq!(rows[0]["subject"], "an ended row");
+        assert_eq!(rows[0]["status"], "completed");
+        assert!(rows[0]["archived_at"].is_null(), "closed but not archived yet: {archived}");
+    }
+
     /// **A board row's owner-gone chip is read from the seat registry on the
     /// encode**, not from the task: an owner nothing holds is `stale`, and a
     /// seat that comes up clears it on the next read (#2517).
@@ -6186,6 +6539,8 @@ mod tests {
 
         let board = encode_subject(&state, &Subject::Board).await.expect("encode");
         let gone_chip = |board: &Value| board["projects"][0]["rows"][0]["marks"]["stale"].clone();
+        let owner_live = |board: &Value| board["projects"][0]["rows"][0]["owner_live"].clone();
+        assert_eq!(owner_live(&board), Value::Bool(false), "the seat is not live: {board}");
         assert_eq!(
             gone_chip(&board),
             Value::Bool(true),
@@ -6195,6 +6550,7 @@ mod tests {
         // The seat comes up: the next read clears the chip.
         let _commands = fleet.install_agent("TestOrg", "proj", "w1");
         let board = encode_subject(&state, &Subject::Board).await.expect("encode");
+        assert_eq!(owner_live(&board), Value::Bool(true), "the seat is live now: {board}");
         assert_eq!(
             gone_chip(&board),
             Value::Bool(false),

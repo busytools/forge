@@ -26,7 +26,7 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, WaitingKind};
 
 use crate::SessionSlot;
-use crate::mcp::tasks::facade::{TaskDraft, TaskPatch, TasksError, TasksFacade};
+use crate::mcp::tasks::facade::{AskDraft, TaskDraft, TaskPatch, TasksError, TasksFacade};
 
 pub(crate) mod facade;
 
@@ -42,13 +42,23 @@ pub(crate) fn add_tools(
     let create = Create { facade: facade.clone(), slot: slot.clone() };
     let update = Update { facade: facade.clone(), slot: slot.clone() };
     let list = List { facade: facade.clone(), slot: slot.clone() };
+    let get = Get { facade: facade.clone(), slot: slot.clone() };
     let delete = Delete { facade: facade.clone(), slot: slot.clone() };
     let claim = Claim { facade: facade.clone(), slot: slot.clone() };
     let wait = Wait { facade: facade.clone(), slot: slot.clone() };
-    let builder = builder.tool(create).tool(update).tool(list).tool(delete).tool(claim).tool(wait);
-    // `tasks__approve` is the lead's door: only the lead stands behind the
-    // user's recorded approval, so a worker is not offered the verb at all.
-    if lead { builder.tool(Approve { facade, slot }) } else { builder }
+    let builder =
+        builder.tool(create).tool(update).tool(list).tool(get).tool(delete).tool(claim).tool(wait);
+    // `tasks__approve` and `tasks__answer` are the lead's doors: only the
+    // lead stands behind the user's recorded look or decision, so a worker
+    // is not offered either verb.
+    if lead {
+        builder
+            .tool(Approve { facade: facade.clone(), slot: slot.clone() })
+            .tool(Answer { facade: facade.clone(), slot: slot.clone() })
+            .tool(Policy { facade, slot })
+    } else {
+        builder
+    }
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -91,6 +101,7 @@ fn task_to_json(task: &Task) -> serde_json::Value {
     map.insert("project".to_owned(), serde_json::json!(task.project_name));
     map.insert("subject".to_owned(), serde_json::json!(task.subject));
     map.insert("status".to_owned(), serde_json::json!(status_str(task.status)));
+    map.insert("kind".to_owned(), serde_json::json!(kind_str(task.kind)));
     // An unclaimed task omits `owner` rather than writing a sentinel: a
     // caller that reads the field back and filters on it would otherwise
     // find none, and a session actually labelled `unclaimed` would read the
@@ -100,6 +111,7 @@ fn task_to_json(task: &Task) -> serde_json::Value {
         ("detail", task.detail.as_deref()),
         ("artifact", artifact(task)),
         ("estimate", task.estimate.as_ref().map(|e| e.words.as_str())),
+        ("cadence", task.cadence.as_ref().map(|c| c.words.as_str())),
         ("parent", task.parent.as_ref().map(TaskId::as_str)),
         ("owner", task.owner.as_ref().map(SessionSlot::label)),
     ] {
@@ -123,8 +135,126 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             }),
         );
     }
+    if let Some(request) = &task.request {
+        map.insert("request".to_owned(), request_json(request));
+    }
+    if let Some(evidence) = &task.evidence {
+        map.insert(
+            "evidence".to_owned(),
+            serde_json::json!({
+                "commit": evidence.commit,
+                "path": evidence.path,
+                "excerpt": evidence.excerpt,
+                // The wire's `verified at`: absent until the gate's check
+                // passed, so an unchecked claim reads as unknown.
+                "verified_at": evidence.verified_at.map(fmt_rfc3339),
+                "problem": evidence.problem,
+            }),
+        );
+    }
+    // `tasks__get` promises the row's links and its archive state: an
+    // archived row that omitted `archived_at` read as a live terminal row,
+    // and the evidence a completion rests on could not be followed.
+    if !task.links.is_empty() {
+        map.insert(
+            "links".to_owned(),
+            serde_json::json!(task.links.iter().map(link_json).collect::<Vec<_>>()),
+        );
+    }
+    if let Some(archived_at) = task.archived_at {
+        map.insert("archived_at".to_owned(), serde_json::json!(fmt_rfc3339(archived_at)));
+    }
+    map.insert("version".to_owned(), serde_json::json!(task.version));
     map.insert("created_at".to_owned(), serde_json::json!(fmt_rfc3339(task.created_at)));
     map.insert("updated_at".to_owned(), serde_json::json!(fmt_rfc3339(task.updated_at)));
+    serde_json::Value::Object(map)
+}
+
+/// The kind as the tool schema spells it.
+fn kind_str(kind: forge_primitives::tasks::TaskKind) -> &'static str {
+    match kind {
+        forge_primitives::tasks::TaskKind::Finite => "finite",
+        forge_primitives::tasks::TaskKind::Standing => "standing",
+    }
+}
+
+/// The link kind as the tool schema spells it.
+fn link_kind_str(kind: LinkKind) -> &'static str {
+    match kind {
+        LinkKind::Spec => "spec",
+        LinkKind::Plan => "plan",
+        LinkKind::Issue => "issue",
+        LinkKind::Pr => "pr",
+        LinkKind::Branch => "branch",
+        LinkKind::Path => "path",
+        LinkKind::Other => "other",
+    }
+}
+
+/// One link as the tool output reads it: where it points, what the
+/// connector last saw, and when it was attached.
+fn link_json(link: &forge_primitives::tasks::TaskLink) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("kind".to_owned(), serde_json::json!(link_kind_str(link.kind)));
+    map.insert("target".to_owned(), serde_json::json!(link.target));
+    for (key, value) in [("label", link.label.as_deref()), ("state", link.state.as_deref())] {
+        if let Some(value) = value {
+            map.insert(key.to_owned(), serde_json::json!(value));
+        }
+    }
+    if let Some(check) = &link.last_check {
+        map.insert(
+            "last_check".to_owned(),
+            serde_json::json!({
+                "at": fmt_rfc3339(check.at),
+                "changed_at": check.changed_at.map(fmt_rfc3339),
+                "state": check.state,
+                "head": check.head,
+                "ci": check.ci,
+                "problem": check.problem,
+            }),
+        );
+    }
+    map.insert("added_at".to_owned(), serde_json::json!(fmt_rfc3339(link.added_at)));
+    serde_json::Value::Object(map)
+}
+
+/// The ask record as the tool output reads it: its kind, the question, its
+/// options or class, and the value the answer returned.
+fn request_json(request: &forge_primitives::tasks::Request) -> serde_json::Value {
+    let ask_kind_str = |kind: forge_primitives::tasks::AskKind| match kind {
+        forge_primitives::tasks::AskKind::Decision => "decision",
+        forge_primitives::tasks::AskKind::Clarification => "clarification",
+        forge_primitives::tasks::AskKind::Exception => "exception",
+        forge_primitives::tasks::AskKind::Teaching => "teaching",
+    };
+    let mut map = serde_json::Map::new();
+    map.insert("kind".to_owned(), serde_json::json!(ask_kind_str(request.kind)));
+    map.insert("question".to_owned(), serde_json::json!(request.question));
+    map.insert("options".to_owned(), serde_json::json!(request.options));
+    if let Some(class) = &request.class {
+        map.insert("class".to_owned(), serde_json::json!(class));
+    }
+    if let Some(answer) = &request.answer {
+        map.insert(
+            "answer".to_owned(),
+            serde_json::json!({
+                "value": match &answer.value {
+                    forge_primitives::tasks::AnswerValue::Choice(choice) => {
+                        serde_json::json!({ "choice": choice })
+                    }
+                    forge_primitives::tasks::AnswerValue::Text(text) => {
+                        serde_json::json!({ "text": text })
+                    }
+                    forge_primitives::tasks::AnswerValue::Disposition(disposition) => {
+                        serde_json::json!({ "disposition": disposition.as_str() })
+                    }
+                },
+                "note": answer.note,
+                "at": fmt_rfc3339(answer.at),
+            }),
+        );
+    }
     serde_json::Value::Object(map)
 }
 
@@ -181,6 +311,10 @@ impl Tool for Create {
          `parent` names another task in the same project this one belongs under, `estimate` a \
          duration, `rank` the queue order, `verify` whether completion waits on the user, \
          `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
+         `kind` is `finite` (the default) for work with a finish line, or `standing` for work \
+         that never finishes - the watcher, a growth loop, a weekly sweep - which carries a \
+         `cadence` (a duration like the estimate) instead of an estimate and is checked when \
+         that cadence comes due rather than chased for overrun. \
          `status` defaults to pending. A row whose deliverable IS the user's own read or \
          decision - a report the user asked to read, a verdict the user asked to give - is \
          minted `verify: \"user\"` explicitly: it ends parked on the user, and the board's \
@@ -188,7 +322,7 @@ impl Tool for Create {
          to its lead instead. The gate is minted on the row that owes the look; an \
          epic's `verify: \"user\"` governs the epic's own completion, and a child never \
          inherits it - a child that owes no look completes on its own terms. `reserved: \
-         \"user\"` reserves the pick for the user: the board sweep leaves it, it never reads \
+         \"user\"` reserves the pick for the user: the drive leaves it, it never reads \
          ready, and no seat's claim takes it. Returns the stored task \
          with its id (use it with tasks__update / tasks__delete). Any session in the project \
          may call this."
@@ -215,8 +349,8 @@ impl Tool for Create {
                     "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
                     "description": "Where the task starts. Defaults to pending, the board's \
                                     Backlog: work kept to look at later, not by itself an \
-                                    assignment. The sweep dispatches only unowned ready rows, \
-                                    so take ownership to set one aside.",
+                                    assignment. The drive nudges the lead about unowned ready \
+                                    work, so take ownership to set one aside.",
                 },
                 "owner": {
                     "type": "string",
@@ -231,6 +365,18 @@ impl Tool for Create {
                 "estimate": {
                     "type": "string",
                     "description": "A duration estimate (e.g. \"1d\").",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["finite", "standing"],
+                    "description": "Finite work with a finish line (the default), or standing \
+                                    work that never finishes and is checked on a cadence.",
+                },
+                "cadence": {
+                    "type": "string",
+                    "description": "A standing row's check interval as a duration (e.g. \
+                                    \"1d\"): when it comes due the row is asked whether it is \
+                                    still doing its job.",
                 },
                 "rank": {
                     "type": "integer",
@@ -249,9 +395,8 @@ impl Tool for Create {
                 "reserved": {
                     "type": "string",
                     "enum": ["user"],
-                    "description": "Set `user` to reserve this pick for the user: the board \
-                                    sweep leaves a reserved row for them instead of \
-                                    dispatching it.",
+                    "description": "Set `user` to reserve this pick for the user: the drive \
+                                    leaves a reserved row for them, and no claim takes it.",
                 },
                 "links": {
                     "type": "array",
@@ -270,6 +415,21 @@ impl Tool for Create {
                         },
                         "required": ["target"],
                     },
+                },
+                "evidence": {
+                    "type": "object",
+                    "description": "What the completion will rest on. `commit` is a sha the \
+                                    repository must hold; `path` a file that must exist at that \
+                                    commit (or at HEAD when no commit is named). `excerpt` is a \
+                                    bounded output sample for the reader - it is never the claim \
+                                    itself. A row cannot complete without one of the two \
+                                    artifacts.",
+                    "properties": {
+                        "commit": { "type": "string" },
+                        "path": { "type": "string" },
+                        "excerpt": { "type": "string" },
+                    },
+                    "additionalProperties": false,
                 },
             },
             "required": ["subject"],
@@ -312,9 +472,11 @@ impl Tool for Update {
 
     fn description(&self) -> &'static str {
         "Change a task in YOUR project by id, stating only the fields to move - everything else \
-         is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
-         failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
-         label of a worker. Pending is the board's Backlog: work kept to look at later, not by \
+         is left alone. Pass `version` with the version you read and a write that would land \
+         on a row another writer has since changed is refused with the current version, so a \
+         lost update is visible. `status` is the usual one (pending / in_progress / waiting / \
+         completed / failed / canceled), and `owner` takes a session label (\"lead\" for the \
+         lead) or the label of a worker. Pending is the board's Backlog: work kept to look at later, not by \
          itself an assignment and not a promise to start. A pending row that reads ready and \
          unowned is dispatchable; take ownership to set it aside. \
          The board is for running work: a landed row with no children and \
@@ -325,8 +487,13 @@ impl Tool for Update {
          approves); and completing the epic's ROOT row closes it and archives the whole \
          tree. A child of an epic completes when its deliverable is out - for a change, \
          delivered means the PR exists and the delivering worker's own checks ran at its \
-         head; for a report or a sweep, concluded means it is handed over. A local commit \
-         alone completes nothing. Any session in the \
+         head; for a report or a sweep, concluded means it is handed over. **A move to \
+         `completed` needs `evidence`**: a `commit` the repository holds - the commit alone is \
+         a claim forge checks - or a `path` at that commit (at HEAD when no commit is named), \
+         with an `excerpt` for the reader. forge checks the claim on the move: a completion \
+         with no evidence, or with evidence the repository cannot back, is refused rather than \
+         landed. Being committed is not the claim; what this move states is. \
+         Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
@@ -359,6 +526,13 @@ impl Tool for Update {
                     "type": "string",
                     "description": "The task id to change, or any unique prefix of one.",
                 },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. Required: a version the \
+                                    row is no longer at refuses the write and names the current \
+                                    one, so a lost update is visible instead of overwriting \
+                                    another writer.",
+                },
                 "subject": { "type": "string", "description": "New row text." },
                 "active_form": {
                     "type": "string",
@@ -377,8 +551,9 @@ impl Tool for Update {
                                     epic completes when its deliverable is out - for a \
                                     change, delivered means the PR exists and the \
                                     delivering worker's own checks ran at its head; for a \
-                                    report or a sweep, concluded means it is handed over. A \
-                                    local commit alone completes nothing.",
+                                    report or a sweep, concluded means it is handed over. \
+                                    Being committed is not the claim; the `evidence` this move \
+                                    states is.",
                 },
                 "owner": {
                     "type": "string",
@@ -426,9 +601,39 @@ impl Tool for Update {
                     "description": "Links to take off, by exact target.",
                     "items": { "type": "string" },
                 },
+                "evidence": {
+                    "type": "object",
+                    "description": "The completion's claim: `commit` (a sha the repository must \
+                                    hold), `path` (a file that must exist at that commit, or at \
+                                    HEAD when no commit is named), and `excerpt` (a bounded \
+                                    sample of the output, for the reader). A move to completed \
+                                    is refused while the claim is missing or does not check \
+                                    out; restating the claim clears its last verdict.",
+                    "properties": {
+                        "commit": { "type": "string" },
+                        "path": { "type": "string" },
+                        "excerpt": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                },
+                "due": {
+                    "type": "string",
+                    "description": "A deadline for the row's current wait (\"30m\", \"2h\", \
+                                    \"1d\"). It arrives with `default` or not at all; a look \
+                                    takes one as any waiting row does.",
+                },
+                "default": {
+                    "type": "string",
+                    "enum": ["escalate", "expire", "reask"],
+                    "description": "The NAMED default that runs when `due` passes: escalate \
+                                    tells the lead the ask went unanswered; expire ends the \
+                                    row canceled with the reason and keeps the record; reask \
+                                    re-notifies the lead and re-arms the deadline. There is \
+                                    no approve default.",
+                },
                 "estimate": { "type": "string", "description": "A duration estimate." },
             },
-            "required": ["id"],
+            "required": ["id", "version"],
             "additionalProperties": false,
         })
     }
@@ -438,6 +643,15 @@ impl Tool for Update {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
+        // Every write names the version it read: an update that skipped
+        // the check could silently overwrite another writer's move.
+        if args.patch.version.is_none() {
+            return tool_error(
+                "a write names the version it read: pass `version`, the row's version as \
+                 tasks__list or tasks__get returned it"
+                    .to_owned(),
+            );
+        }
         match self.facade.update_task(&self.slot, &TaskId::from(args.id.as_str()), args.patch) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
@@ -453,6 +667,14 @@ struct List {
     slot: SessionSlot,
 }
 
+/// How many rows a list answer carries when the caller states no limit.
+const DEFAULT_LIST_LIMIT: usize = 20;
+
+/// The most a caller may ask a list answer to carry. A stated limit above
+/// this is clamped rather than honoured: one poll must not put a project's
+/// whole history back through the model's context.
+const MAX_LIST_LIMIT: usize = 100;
+
 #[derive(serde::Deserialize)]
 struct ListArgs {
     #[serde(default)]
@@ -462,14 +684,18 @@ struct ListArgs {
     #[serde(default)]
     status: Option<TaskStatus>,
     #[serde(default)]
+    kind: Option<forge_primitives::tasks::TaskKind>,
+    #[serde(default)]
     ready: Option<bool>,
     #[serde(default)]
     detail: Option<bool>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 fn waiting_kind_str(kind: WaitingKind) -> &'static str {
     match kind {
-        WaitingKind::Decision => "decision",
+        WaitingKind::User => "user",
         WaitingKind::Dependency => "dependency",
         WaitingKind::Resource => "resource",
     }
@@ -505,7 +731,9 @@ fn withheld_line(withheld: &[crate::board::BoardRow]) -> Option<String> {
     let noun = if total == 1 { "row" } else { "rows" };
     let pronoun = if total == 1 { "it" } else { "them" };
     Some(format!(
-        "{total} finished {noun} withheld by status: {}. Pass {} to read {pronoun}.",
+        "{total} finished {noun} withheld by status: {}. Pass {} to read {pronoun}. A finished \
+         row archives a day after it ended and leaves this read entirely; `tasks__get` by its id \
+         returns it whole, archived rows included.",
         tally.join(", "),
         doors.join(" or "),
     ))
@@ -518,8 +746,6 @@ fn mark_names(marks: crate::board::Marks) -> Vec<&'static str> {
         (marks.ready, "ready"),
         (marks.in_review, "in_review"),
         (marks.overdue, "overdue"),
-        (marks.no_movement, "no_movement"),
-        (marks.waiting_too_long, "waiting_too_long"),
         (marks.stale, "stale"),
         (marks.to_close, "to_close"),
     ] {
@@ -564,33 +790,29 @@ fn board_row_to_json(row: &crate::board::BoardRow) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-/// One board row at the size a first orientation reads it: identity,
-/// live state and the derived facts, without the prose, the hierarchy
-/// pointers, the touch age or the raw timestamps.
-/// `tasks__list {detail: true}` returns [`board_row_to_json`] instead.
+/// One board row at the size a first orientation reads it: identity, the
+/// state it is in, what it is waiting on, what the board derives, its
+/// estimate or cadence, and whether its evidence has been checked.
+///
+/// Everything else - the brief, the links, the hierarchy, the worked time,
+/// the history - is the detail verb's, so a list answer stays deliverable
+/// however busy the project is.
 fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
     let task = &row.task;
     let mut map = serde_json::Map::new();
     map.insert("id".to_owned(), serde_json::json!(task.id.as_str()));
     map.insert("subject".to_owned(), serde_json::json!(task.subject));
     map.insert("status".to_owned(), serde_json::json!(status_str(task.status)));
+    map.insert("kind".to_owned(), serde_json::json!(kind_str(task.kind)));
     for (key, value) in [
-        ("artifact", artifact(task)),
         ("estimate", task.estimate.as_ref().map(|e| e.words.as_str())),
+        ("cadence", task.cadence.as_ref().map(|c| c.words.as_str())),
         ("owner", task.owner.as_ref().map(SessionSlot::label)),
     ] {
         if let Some(value) = value {
             map.insert(key.to_owned(), serde_json::json!(value));
         }
     }
-    for (key, value) in
-        [("verify", task.verify.map(verify_str)), ("reserved", task.reserved.map(|_| "user"))]
-    {
-        if let Some(value) = value {
-            map.insert(key.to_owned(), serde_json::json!(value));
-        }
-    }
-    map.insert("worked".to_owned(), serde_json::json!(crate::board::fmt_secs(row.worked_secs)));
     map.insert("marks".to_owned(), serde_json::json!(mark_names(row.marks)));
     if let Some(wait) = &task.waiting_on {
         map.insert(
@@ -603,10 +825,21 @@ fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
             }),
         );
     }
-    if let Some((done, total)) = row.rollup {
-        map.insert("rollup".to_owned(), serde_json::json!(format!("{done}/{total}")));
+    if let Some(evidence) = &task.evidence {
+        map.insert("evidence".to_owned(), serde_json::json!(evidence_state(evidence)));
     }
     serde_json::Value::Object(map)
+}
+
+/// The evidence's own state, in one word: checked and passed, checked and
+/// refused, or not checked at all. Absence of a verdict is `unknown`, never
+/// success.
+fn evidence_state(evidence: &forge_primitives::tasks::Evidence) -> &'static str {
+    match (&evidence.verified_at, &evidence.problem) {
+        (Some(_), _) => "verified",
+        (None, Some(_)) => "failed",
+        (None, None) => "unchecked",
+    }
 }
 
 #[async_trait::async_trait]
@@ -616,25 +849,28 @@ impl Tool for List {
     }
 
     fn description(&self) -> &'static str {
-        "List the board of YOUR project. The default read returns pending, in_progress, \
-         waiting and failed rows as compact rows: id, subject, status, owner, \
-         estimate, artifact, verify and reserved state, plus what the board derives: `worked` \
-         time against the estimate, the marks (ready, in_review, overdue, no_movement, \
-         waiting_too_long, stale, to_close), the wait it is on, and a parent's rollup - under \
-         a dated line, so no session does date arithmetic. A completed \
-         or canceled row is left out, and the read ends with a line counting what was \
-         withheld by status and naming `status` as the door; a `status` \
-         filter overrides that default, so `status: \"completed\"` returns the completed rows. \
-         Pass `detail: true` for each row's whole record - the parent and its subject, the \
-         `detail` prose, `active_form`, the wait's detail words, any attestation quote, how \
-         long since the last touch, and the created/updated timestamps. Narrow with `owner` \
-         (a session label), `parent` (a \
-         task id), `status`, or `ready` (true = pending with nothing waiting on it and not \
-         reserved for the user; ownership is NOT part of the mark, so read `owner` too when \
-         the question is an unowned row). \
-         An empty array means your project has no tasks in flight (or only terminal rows, \
-         which the closing line names), or that your project could not be resolved, or that \
-         this run could not read its stored tasks. Any session in the project may call this."
+        "List the board of YOUR project. The answer is an envelope: `rows`, then `returned` (how \
+         many this answer carries), `total` (how many the filters match), `truncated` (true \
+         when `returned` is smaller), and `narrow`, the doors that cut it down. The default \
+         limit is 20 and the most a caller may ask for is 100, so an answer always fits. \
+         Each row is compact: id, subject, status, kind, owner, the wait it is on, the five \
+         marks (ready, in_review, overdue, stale, to_close), its estimate or cadence, and \
+         whether its evidence is `verified`, `failed` or `unchecked`. The default read \
+         carries pending, in_progress, waiting and failed rows - a completed or canceled row \
+         is history and is left out, and the read ends with a line counting what was withheld \
+         by status and naming `status` as the door. A `status` filter overrides that default, \
+         so `status: \"completed\"` returns the completed rows. For one row's whole record - \
+         the `detail` prose, the links, the parent and its subject, the wait's words, the \
+         evidence and its check, and the history - use `tasks__get`; `detail: true` here is \
+         the heavier per-row echo and is meant for a short, narrowed read. Narrow with `owner` \
+         (a session label), `parent` (a task id), `status`, `kind` (finite or standing), or \
+         `ready` (true = pending with nothing waiting on it and not reserved for the user; \
+         ownership is NOT part of the mark, so read `owner` too when the question is an \
+         unowned row). An empty `rows` means your project has no tasks in flight (or only \
+         terminal rows, which the closing line names, or archived rows, which `tasks__get` reads \
+         by id), or that your project could not be resolved, or that this run could not read its \
+         stored tasks. Any session in the \
+         project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -655,6 +891,11 @@ impl Tool for List {
                     "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
                     "description": "Only tasks in this state.",
                 },
+                "kind": {
+                    "type": "string",
+                    "enum": ["finite", "standing"],
+                    "description": "Only finite work or only standing work.",
+                },
                 "ready": {
                     "type": "boolean",
                     "description": "True lists only rows something can start: pending, \
@@ -669,7 +910,13 @@ impl Tool for List {
                                     the `detail` prose, `active_form`, the wait's detail \
                                     words, any attestation quote, how long since the last \
                                     touch, and the created/updated timestamps. Off by \
-                                    default; read the compact row first.",
+                                    default; for one row use tasks__get.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many rows this answer carries. Defaults to 20 and is \
+                                    clamped to 100; `total` in the envelope says how many \
+                                    the filters matched.",
                 },
             },
             "additionalProperties": false,
@@ -687,6 +934,7 @@ impl Tool for List {
             args.owner.as_deref(),
             parent.as_ref(),
             args.status,
+            args.kind,
             args.ready,
         );
         // A first orientation read has to fit (#3030), so the default is
@@ -698,18 +946,33 @@ impl Tool for List {
             Some(_) => (rows, Vec::new()),
             None => rows.into_iter().partition(|row| !is_finished(row.task.status)),
         };
+        // The envelope: how many came back of how many there are, whether
+        // the answer was cut, and the doors that narrow it. A caller never
+        // has to infer a truncation from a row count.
+        let total = rows.len();
+        let limit = args.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
         let full = args.detail.unwrap_or(false);
-        let arr: Vec<serde_json::Value> = rows
+        let shown: Vec<serde_json::Value> = rows
             .iter()
+            .take(limit)
             .map(|row| if full { board_row_to_json(row) } else { board_row_compact(row) })
             .collect();
-        match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
+        let truncated = total > shown.len();
+        let envelope = serde_json::json!({
+            "rows": shown,
+            "returned": shown.len(),
+            "total": total,
+            "truncated": truncated,
+            "narrow": "narrow with `owner`, `parent`, `status`, `kind` or `ready`, or raise \
+                       `limit` (max 100); `tasks__get` reads one row whole",
+        });
+        match serde_json::to_string_pretty(&envelope) {
             Ok(json) => {
                 let mut blocks = vec![ToolOutputBlock::Text {
                     text: format!("now {}\n{json}", fmt_rfc3339(SystemTime::now())),
                 }];
                 // The closing line is its OWN block: the first block stays
-                // the clock line plus the rows array, which is what a card
+                // the clock line plus the envelope, which is what a card
                 // parses, and the extra block is drawn beside it rather
                 // than swallowed.
                 if let Some(line) = withheld_line(&withheld) {
@@ -722,6 +985,71 @@ impl Tool for List {
     }
 }
 
+struct Get {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct GetArgs {
+    id: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Get {
+    fn name(&self) -> &'static str {
+        "tasks__get"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read ONE task of YOUR project whole: its identity and state, the `detail` brief, the \
+         links, the parent and its subject, the wait it is on with its words, its evidence and \
+         the gate's check of it, what the board derives (the marks, the worked time, the touch \
+         age, the rollup) and its history - the newest transitions, with `history_total` \
+         saying how many there are when the tail is capped. A row that has left the live board \
+         reads from the archive, with `archived_at` set and no history. A task is named by its \
+         full id or any unique prefix of one; an exact id wins over a longer id it prefixes, \
+         and a prefix matching more than one row is refused with the matching rows named. Use \
+         this after `tasks__list` names a row you need the rest of; keep the list read \
+         compact. Any session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The task id to read, or any unique prefix of one.",
+                },
+            },
+            "required": ["id"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: GetArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        match self.facade.get_task(&self.slot, &TaskId::from(args.id.as_str())) {
+            Ok(row) => {
+                let mut body = board_row_to_json(&row);
+                if let serde_json::Value::Object(map) = &mut body {
+                    map.insert("history".to_owned(), serde_json::json!(row.history));
+                    map.insert("history_total".to_owned(), serde_json::json!(row.history_total));
+                }
+                match serde_json::to_string_pretty(&body) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
 struct Delete {
     facade: Arc<dyn TasksFacade>,
     slot: SessionSlot,
@@ -730,6 +1058,7 @@ struct Delete {
 #[derive(serde::Deserialize)]
 struct DeleteArgs {
     id: String,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -770,8 +1099,14 @@ impl Tool for Delete {
                     "type": "string",
                     "description": "The task id to remove, or any unique prefix of one.",
                 },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. A delete that would land \
+                                    on a row another writer has since changed is refused with \
+                                    the current version.",
+                },
             },
-            "required": ["id"],
+            "required": ["id", "version"],
             "additionalProperties": false,
         })
     }
@@ -781,7 +1116,7 @@ impl Tool for Delete {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.delete_task(&self.slot, &TaskId::from(args.id.as_str())) {
+        match self.facade.delete_task(&self.slot, &TaskId::from(args.id.as_str()), args.version) {
             Ok(removed) => {
                 let mut envelope =
                     crate::mcp::deleted::removed_record(&task_to_json(&removed.task));
@@ -803,10 +1138,8 @@ struct Claim {
 
 #[derive(serde::Deserialize)]
 struct ClaimArgs {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    epic: Option<String>,
+    id: String,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -817,15 +1150,15 @@ impl Tool for Claim {
 
     fn description(&self) -> &'static str {
         "Claim a task in YOUR project: one atomic write that makes you its owner and marks it \
-         in progress, ticking the attempt. Pass `id` for a named row, or `epic` to pull the top \
-         ready row of that epic by rank - exactly one of the two. `id` and `epic` each take a \
-         full task id or any unique prefix of one; an exact id wins over any longer id that \
-         starts with it, and a prefix matching more than one row is refused with the matching \
-         rows named. Refused when a live seat holds the row (named), when it is not pending, \
-         when it is reserved for the user (`reserved: \"user\"` - the sweep's pick and nobody \
-         else's), or when you already have a row in progress: one in progress per worker. \
-         Claiming is for unassigned rows: a row a lead created for you already names you as \
-         `owner`, so work it without claiming. Returns the claimed record."
+         in progress. Pass `id`, a full task id or any unique prefix of one, and `version`, \
+         the row as you read it; an exact id wins over any longer id that starts with it, and \
+         a prefix matching more than one row is refused with the matching rows named. Refused \
+         when a live seat holds the row (named), when it is not pending, when it is waiting on \
+         something, when it is reserved for the user (`reserved: \"user\"` - the user's pick \
+         and nobody else's), when the version you named is stale, or when you already have a \
+         row in progress: one in progress per worker. Claiming is for unassigned rows: a row a \
+         lead created for you already names you as `owner`, so work it without claiming. \
+         Returns the claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -836,12 +1169,14 @@ impl Tool for Claim {
                     "type": "string",
                     "description": "The task id to claim, or any unique prefix of one.",
                 },
-                "epic": {
-                    "type": "string",
-                    "description": "The epic whose top ready row to pull, by rank; a full id or \
-                                    any unique prefix of one.",
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. A claim that would land \
+                                    on a row another writer has since changed is refused with \
+                                    the current version.",
                 },
             },
+            "required": ["id", "version"],
             "additionalProperties": false,
         })
     }
@@ -851,11 +1186,7 @@ impl Tool for Claim {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match (&args.id, &args.epic) {
-            (Some(_), None) | (None, Some(_)) => {}
-            _ => return tool_error("state exactly one of id or epic".to_owned()),
-        }
-        match self.facade.claim_task(&self.slot, args.id.as_deref(), args.epic.as_deref()) {
+        match self.facade.claim_task(&self.slot, &args.id, args.version) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -878,6 +1209,27 @@ struct WaitArgs {
     detail: Option<String>,
     #[serde(default)]
     on: Option<String>,
+    /// The ask's kind when it is on the person: decision, clarification,
+    /// exception or teaching. A look needs no `ask` (it is the gate's).
+    #[serde(default)]
+    ask: Option<forge_primitives::tasks::AskKind>,
+    /// The ask's question, one sentence: the card's headline.
+    #[serde(default)]
+    question: Option<String>,
+    /// A decision's enumerated options; empty for every other kind.
+    #[serde(default)]
+    options: Vec<String>,
+    /// A teaching's class: the recurring trouble the lesson settles.
+    #[serde(default)]
+    class: Option<String>,
+    /// How long until the deadline default runs ("30m", "2h", "1d").
+    #[serde(default)]
+    due: Option<String>,
+    /// The named default that runs when `due` passes: escalate, expire or
+    /// reask. Never approve, and never without `due`.
+    #[serde(default)]
+    default: Option<forge_primitives::tasks::DefaultIfIgnored>,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -887,30 +1239,39 @@ impl Tool for Wait {
     }
 
     fn description(&self) -> &'static str {
-        "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
-         (which routes to the user), dependency (another task: put its id in `on`), or resource \
-         (an account, a CI run, a machine). A decision wait is the at-convenience channel to \
-         the user: a lead who can continue but wants the person's look puts the ask here on a \
-         board row rather than saying it in prose, because prose is not a surface and a wait \
-         left in prose is invisible once your turn ends. Do not use it to park work the \
-         decision model, your peers or the review can settle. A dependency wait is on the \
-         task it names, not on the user. A blocker parked on the user's look has not ended, so the chain keeps \
-         waiting until the user approves it. The waiting row is not itself waiting on the \
-         user: a row's `verify: user` gates its own completion, not its dependency \
-         wait, so the row stays movable and deletable. Route a decision to the user when the user \
-         asked for a hold, when something is still genuinely ambiguous after the decision model, \
-         peer opinions and the team's own review, or when the person should look at the work when \
-         they come back. Only the lead mints a \
-         user-decision wait: a worker that believes the call is the user's hands it to its \
-         lead, because a decision a worker parks outlives its answer and the lead cannot close \
-         it afterward. `detail` is the words. \
-         A wait on the user that has gone moot is withdrawn, not stranded: a lead cancels the \
-         row with the reason it goes away (`tasks__update`, `detail`), and the row records why. \
-         The row \
-         and the `on` blocker are each named by a full id or any unique prefix of one; an exact \
-         id wins over any longer id that starts with it, and a prefix matching more than one row \
-         is refused with the matching rows named. The row must be yours. Refused for a row you \
-         do not hold, or one that is not there. Returns the record in waiting."
+        "Put one of YOUR rows into waiting and state what it waits on. `kind` is user (the \
+         person), dependency (another task: put its id in `on`), or resource (an account, a CI \
+         run, a machine). An ask on the person also carries `ask`, its kind: decision (a choice \
+         among `options`, which are required), clarification (a fact only the person has, \
+         answered in their own words), exception (a disposition: retry, rescope, drop or \
+         diagnose), or teaching (a lesson that becomes project policy for the `class` it \
+         names). `question` is the ask in one sentence and becomes the card's headline; \
+         `detail` is the why. A teaching's class is what stops the trouble recurring: an ask \
+         whose class a policy note already settles is refused with the note quoted. A `due` \
+         duration with a `default` - escalate, expire or reask - gives the ask a deadline whose \
+         NAMED default runs when it passes; the two arrive together, and there is no approve \
+         default. Acknowledge and snooze are the person's own acts on the board, never tools. \
+         A user wait is the at-convenience channel: a lead who can continue but wants the \
+         person's answer puts the ask on a board row rather than in prose, because prose is not \
+         a surface. **Urgency picks the channel**: an ask needed now goes to the person \
+         directly, and an ask that is not immediate is raised here - a row waiting on the \
+         person is blocked on them, not annotated. Route a decision to the person when they asked for a hold, when something \
+         is still genuinely ambiguous after the decision model, peer opinions and the team's \
+         own review, or when the person should look at the work when they come back. Raise a \
+         clarification for a fact only they have, an exception for a disposition on a fault, \
+         and a teaching when a class keeps recurring and a lesson settles it. Do not use any of \
+         them to park work the decision model, your peers or the review can settle. A dependency wait is on the task it names, not on the user. A blocker parked on \
+         the user's look has not ended, so the chain keeps waiting until the user approves it. \
+         The waiting row is not itself waiting on the user: a row's `verify: user` gates its own \
+         completion, not its dependency wait, so the row stays movable and deletable. Only the \
+         lead raises a user ask: a worker that believes the call is the person's hands it to its \
+         lead. A wait on the user that has gone moot is withdrawn, not stranded: a lead cancels \
+         the row with the reason it goes away (`tasks__update`, `detail`), and the row records \
+         why. The row and the `on` blocker are each named by a full id or any unique prefix of \
+         one; an exact id wins over any longer id that starts with it, and a prefix matching \
+         more than one row is refused with the matching rows named. The row must be yours. \
+         Refused for a row you do not hold, or one that is not there. Returns the record in \
+         waiting."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -923,12 +1284,14 @@ impl Tool for Wait {
                 },
                 "kind": {
                     "type": "string",
-                    "enum": ["decision", "dependency", "resource"],
-                    "description": "What it waits on; the kind decides where the unblock lands.",
+                    "enum": ["user", "dependency", "resource"],
+                    "description": "What it waits on: `user` is the person (an ask), \
+                                    `dependency` another task, `resource` an account, CI or a \
+                                    machine.",
                 },
                 "detail": {
                     "type": "string",
-                    "description": "The words: what exactly is being waited for. For a decision: \
+                    "description": "The words: what exactly is being waited for. For a user wait: \
                                     why it needs the user specifically, what is already decided, \
                                     what is open, what their answer changes, and the links to \
                                     read - a bare question with no why is its own failure, and \
@@ -941,8 +1304,53 @@ impl Tool for Wait {
                     "description": "For a dependency: the task id it waits on, or any unique \
                                     prefix of one.",
                 },
+                "ask": {
+                    "type": "string",
+                    "enum": ["decision", "clarification", "exception", "teaching"],
+                    "description": "The ask's kind when it is on the person. A look needs no \
+                                    `ask`: it is the verify gate's.",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "The ask's question, in one sentence. It becomes the card's \
+                                    headline, so state the ask rather than the background.",
+                },
+                "options": {
+                    "type": "array",
+                    "description": "A decision's choices, each a short phrase, at least one. \
+                                    The person answers by picking one, so list the real \
+                                    alternatives rather than one option and a rest. A \
+                                    clarification or exception carries none.",
+                    "items": { "type": "string" },
+                },
+                "class": {
+                    "type": "string",
+                    "description": "A teaching's class: the recurring trouble the lesson \
+                                    settles, a short slug. An ask of a class a policy note \
+                                    already settles is refused with the note quoted.",
+                },
+                "due": {
+                    "type": "string",
+                    "description": "How long until the deadline default runs (\"30m\", \"2h\", \
+                                    \"1d\"). It arrives with `default` or not at all.",
+                },
+                "default": {
+                    "type": "string",
+                    "enum": ["escalate", "expire", "reask"],
+                    "description": "The NAMED default that runs when `due` passes: escalate \
+                                    tells the lead the ask went unanswered; expire ends the \
+                                    row canceled with the reason and keeps the record; reask \
+                                    re-notifies the lead and re-arms the deadline. There is \
+                                    no approve default.",
+                },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. A wait that would land \
+                                    on a row another writer has since changed is refused with \
+                                    the current version.",
+                },
             },
-            "required": ["id", "kind"],
+            "required": ["id", "kind", "version"],
             "additionalProperties": false,
         })
     }
@@ -956,12 +1364,27 @@ impl Tool for Wait {
             return tool_error("a dependency wait needs `on`, the task it waits on".to_owned());
         }
         let on = args.on.as_deref().map(TaskId::from);
+        // An ask on the person needs a kind; a decision without one is the
+        // historical shape and reads as a decision.
+        let ask = match (args.ask, args.question) {
+            (None, None) => None,
+            (kind, question) => Some(AskDraft {
+                kind: kind.unwrap_or_default(),
+                question: question.unwrap_or_default(),
+                options: args.options,
+                class: args.class,
+                due: args.due,
+                default: args.default,
+            }),
+        };
         match self.facade.wait_task(
             &self.slot,
             &TaskId::from(args.id.as_str()),
             args.kind,
             args.detail,
             on.as_ref(),
+            ask,
+            args.version,
         ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
@@ -982,6 +1405,7 @@ struct ApproveArgs {
     id: String,
     /// The approval as the user gave it, quoted.
     approval: String,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -1002,7 +1426,10 @@ impl Tool for Approve {
          The user's own approve, send-back and cancel doors stay; the user's reopen strikes \
          the attestation, re-mints the look gate and parks the row on them again. A task is \
          named by its full id or any unique prefix of one. Refused when the row is not \
-         waiting on a look, when the quote is empty, or when the caller is not the lead."
+         waiting on a look, when the quote is empty, when the version you named is stale, when \
+         the caller is not the lead, or when the completion's evidence does not check out \
+         against the repository - the same gate every completion runs, because the approve IS \
+         a completion."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1018,8 +1445,14 @@ impl Tool for Approve {
                     "description": "The user's approval, quoted as they gave it (e.g. \
                                     \"Looks right - merge\"). Required and non-empty.",
                 },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. An approve that would \
+                                    land on a row another writer has since changed is refused \
+                                    with the current version.",
+                },
             },
-            "required": ["id", "approval"],
+            "required": ["id", "approval", "version"],
             "additionalProperties": false,
         })
     }
@@ -1037,12 +1470,232 @@ impl Tool for Approve {
                     .to_owned(),
             );
         }
-        match self.facade.attest_task(&self.slot, &TaskId::from(args.id.as_str()), approval) {
+        match self.facade.attest_task(
+            &self.slot,
+            &TaskId::from(args.id.as_str()),
+            approval,
+            args.version,
+        ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
             },
             Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
+struct Answer {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct AnswerArgs {
+    id: String,
+    /// A decision's choice: one of the row's options.
+    #[serde(default)]
+    choice: Option<String>,
+    /// A clarification's or teaching's answer, in the person's words.
+    #[serde(default)]
+    text: Option<String>,
+    /// An exception's disposition: retry, rescope, drop or diagnose.
+    #[serde(default)]
+    disposition: Option<String>,
+    /// A teaching's lesson: the policy text its class is settled by.
+    #[serde(default)]
+    lesson: Option<String>,
+    /// The note they left with it, when they left one.
+    #[serde(default)]
+    note: Option<String>,
+    version: u64,
+}
+
+#[async_trait::async_trait]
+impl Tool for Answer {
+    fn name(&self) -> &'static str {
+        "tasks__answer"
+    }
+
+    fn description(&self) -> &'static str {
+        "Lead-only. Record the person's answer to a row waiting on an ask, with the ONE value \
+         that ask's kind needs: `choice` for a decision (one of the row's options), `text` for \
+         a clarification (the fact, in their words) and for a teaching (the lesson, with \
+         `lesson` stating the policy text its class is settled by), or `disposition` for an \
+         exception (retry, rescope, drop or diagnose). `note` is the short note they left with \
+         it. The answer is stored as the row's request record and the row resumes in progress; \
+         a teaching also writes the project policy note, so the class stops recurring. \
+         **Never answer with your own opinion**: the ask is the person's to answer, and if \
+         they have not answered the row stays waiting for them. A look is not an ask - that \
+         door is tasks__approve. A task is named by its full id or any unique prefix of one. \
+         Refused when the row is not waiting on an ask for the person, when the value's shape \
+         does not fit the kind, when the choice is not one of its options, or when the caller \
+         is not the lead."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The row waiting on the ask, or any unique prefix of its id.",
+                },
+                "choice": {
+                    "type": "string",
+                    "description": "For a decision: the option the person picked, as one of \
+                                    the row's options.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "For a clarification: the fact the ask needed, in the \
+                                    person's words. For a teaching: the lesson.",
+                },
+                "disposition": {
+                    "type": "string",
+                    "enum": ["retry", "rescope", "drop", "diagnose"],
+                    "description": "For an exception: the disposal the person chose.",
+                },
+                "lesson": {
+                    "type": "string",
+                    "description": "For a teaching: the policy text the lesson settles its \
+                                    class by, written to the project's policy notes.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "The short note the person left with the answer, if any.",
+                },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. An answer that would \
+                                    land on a row another writer has since changed is refused \
+                                    with the current version.",
+                },
+            },
+            "required": ["id", "version"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        if self.slot.label() != crate::LEAD_LABEL {
+            return tool_error(
+                "only the project lead records the person's answer; this session is a worker"
+                    .to_owned(),
+            );
+        }
+        let args: AnswerArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        // One door, one value: the ask's kind decides which, and the shape
+        // is refused here where the caller can see all three fields.
+        let stated = [args.choice.is_some(), args.text.is_some(), args.disposition.is_some()]
+            .iter()
+            .filter(|stated| **stated)
+            .count();
+        if stated != 1 {
+            return tool_error(
+                "an answer states exactly one of `choice`, `text` or `disposition`".to_owned(),
+            );
+        }
+        match self.facade.answer_task(
+            &self.slot,
+            &TaskId::from(args.id.as_str()),
+            args.choice.as_deref(),
+            args.text.as_deref(),
+            args.disposition.as_deref(),
+            args.note.as_deref(),
+            args.lesson.as_deref(),
+            args.version,
+        ) {
+            Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
+            Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
+struct Policy {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct PolicyArgs {
+    #[serde(default)]
+    class: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Policy {
+    fn name(&self) -> &'static str {
+        "tasks__policy"
+    }
+
+    fn description(&self) -> &'static str {
+        "Lead-only. Read YOUR project's policy notes - the lessons earlier teaching answers \
+         settled, keyed by `class` - or write one yourself with `class` and `text`. A note is \
+         the class's standing rule: it is appended to a lead's prompt at spawn, and an ask of a \
+         class a note settles is refused with the note quoted, so the trouble stops recurring. \
+         **A resumed lead does not see a note added since its spawn until its next spawn or \
+         this read.** Call with neither argument to list; with both to write."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "class": {
+                    "type": "string",
+                    "description": "The recurring class of ask the note settles, a short slug.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The lesson itself: the policy the class is settled by.",
+                },
+            },
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: PolicyArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let note_json = |note: &crate::store::policy::PolicyNote| {
+            serde_json::json!({
+                "class": note.class,
+                "text": note.text,
+                "source_task": note.source_task,
+                "at": fmt_rfc3339(note.at),
+            })
+        };
+        match (args.class.as_deref(), args.text.as_deref()) {
+            (None, None) => {
+                let notes: Vec<serde_json::Value> =
+                    self.facade.policy_notes(&self.slot).iter().map(note_json).collect();
+                match serde_json::to_string_pretty(&serde_json::json!({ "notes": notes })) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            (Some(class), Some(text)) => match self.facade.add_policy_note(&self.slot, class, text)
+            {
+                Ok(note) => match serde_json::to_string_pretty(&note_json(&note)) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                },
+                Err(err) => tool_error(format_tasks_error(&err)),
+            },
+            _ => tool_error(
+                "a policy write states both `class` and `text`; a read states neither".to_owned(),
+            ),
         }
     }
 }
@@ -1135,7 +1788,9 @@ mod tests {
     async fn approve_threads_the_quote_and_the_caller_to_the_facade() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Approve { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "approval": " looks good " })))
+            .call(input(
+                serde_json::json!({ "id": "t-1", "approval": " looks good ", "version": 3 }),
+            ))
             .await;
         assert!(!out.is_error, "approve succeeds: {out:?}");
         let calls = facade.attested.lock();
@@ -1148,7 +1803,7 @@ mod tests {
     async fn approve_refuses_an_empty_quote_without_touching_the_facade() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Approve { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "approval": "   " })))
+            .call(input(serde_json::json!({ "id": "t-1", "approval": "   ", "version": 3 })))
             .await;
         assert!(out.is_error, "an empty approval is nothing to stand behind");
         assert!(facade.attested.lock().is_empty(), "invalid input never reaches the facade");
@@ -1174,8 +1829,8 @@ mod tests {
         }
         assert_eq!(
             approve.input_schema()["required"],
-            serde_json::json!(["id", "approval"]),
-            "the quote is required at the schema",
+            serde_json::json!(["id", "approval", "version"]),
+            "the quote and the version it read are required at the schema",
         );
     }
 
@@ -1208,7 +1863,7 @@ mod tests {
     async fn update_reports_a_missing_id_rather_than_succeeding_silently() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Update { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "nope", "status": "completed" })))
+            .call(input(serde_json::json!({ "id": "nope", "status": "completed", "version": 0 })))
             .await;
         assert!(out.is_error, "an unknown id is an error, not a no-op");
         assert!(
@@ -1229,8 +1884,9 @@ mod tests {
             id: "t-9".to_owned(),
             project: "otherproj".to_owned(),
         }));
-        let elsewhere =
-            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending" }))).await;
+        let elsewhere = tool
+            .call(input(serde_json::json!({ "id": "t-9", "status": "pending", "version": 0 })))
+            .await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -1239,8 +1895,9 @@ mod tests {
         );
 
         *facade.update_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent =
-            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending" }))).await;
+        let absent = tool
+            .call(input(serde_json::json!({ "id": "t-9", "status": "pending", "version": 0 })))
+            .await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -1260,7 +1917,7 @@ mod tests {
         task.owner = Some(SessionSlot::lead("TestOrg", "myproj"));
         *facade.update_result.lock() = Some(Ok(task));
         let out = Update { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "status": "in_progress" })))
+            .call(input(serde_json::json!({ "id": "t-1", "status": "in_progress", "version": 0 })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
         let json: serde_json::Value =
@@ -1269,6 +1926,23 @@ mod tests {
         assert_eq!(json["subject"], "Merge peers and workers");
         assert_eq!(json["status"], "in_progress", "and the state it now holds");
         assert_eq!(json["owner"], "lead");
+    }
+
+    /// Every write names the version it read, so an update that names none
+    /// is refused before the facade sees it.
+    #[tokio::test]
+    async fn update_refuses_a_write_that_names_no_version() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Update { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "status": "pending" })))
+            .await;
+        assert!(out.is_error, "a write names the version it read");
+        assert!(
+            text_of(&out).contains("names the version"),
+            "the refusal states the rule: {:?}",
+            text_of(&out),
+        );
+        assert!(facade.updated.lock().is_empty(), "the facade is never reached");
     }
 
     /// A delete echoes what went, in the adopted envelope: the record as
@@ -1282,7 +1956,7 @@ mod tests {
         *facade.delete_result.lock() =
             Some(Ok(RemovedTaskTree { task: sample_task(), descendants_removed: 2 }));
         let out = Delete { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1" })))
+            .call(input(serde_json::json!({ "id": "t-1", "version": 0 })))
             .await;
         assert!(!out.is_error, "delete succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
@@ -1306,7 +1980,7 @@ mod tests {
         *facade.delete_result.lock() =
             Some(Ok(RemovedTaskTree { task: sample_task(), descendants_removed: 0 }));
         let out = Delete { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1" })))
+            .call(input(serde_json::json!({ "id": "t-1", "version": 0 })))
             .await;
         assert!(!out.is_error, "delete succeeds: {out:?}");
         let json: serde_json::Value =
@@ -1323,7 +1997,8 @@ mod tests {
                 "id": "t-1",
                 "status": "waiting",
                 "detail": "why",
-                "links_add": [{ "target": "x" }]
+                "links_add": [{ "target": "x" }],
+                "version": 0
             })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
@@ -1344,16 +2019,20 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            request: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            evidence: None,
+            version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
@@ -1428,6 +2107,7 @@ mod tests {
                 label: Some("PR #9".to_owned()),
                 target: "https://example.invalid/pull/9".to_owned(),
                 state: None,
+                last_check: None,
                 added_at: SystemTime::UNIX_EPOCH,
             }],
             parent: Some(TaskId::from("epic")),
@@ -1504,7 +2184,7 @@ mod tests {
             .description()
             .to_owned();
         for clause in [
-            "An empty array means your project has no tasks in flight",
+            "An empty `rows` means your project has no tasks in flight",
             "or that your project could not be resolved",
             "or that this run could not read its stored tasks",
         ] {
@@ -1522,10 +2202,13 @@ mod tests {
         let wait = Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         let desc = wait.description();
         for clause in [
-            "Route a decision to the user when the user asked for a hold",
+            "Route a decision to the person when they asked for a hold",
             "something is still genuinely ambiguous after the decision model, peer opinions and \
              the team's own review",
             "when the person should look at the work when they come back",
+            "a clarification for a fact only they have",
+            "an exception for a disposition on a fault",
+            "a teaching when a class keeps recurring and a lesson settles it",
         ] {
             assert!(desc.contains(clause), "the wait description owes {clause:?}: {desc}");
         }
@@ -1559,7 +2242,7 @@ mod tests {
         let create = Create { facade: facade.clone(), slot: slot.clone() };
         let list = List { facade: facade.clone(), slot: slot.clone() };
         for (name, description, schema, also_named) in [
-            ("tasks__claim", claim.description(), claim.input_schema(), &["epic"] as &[&str]),
+            ("tasks__claim", claim.description(), claim.input_schema(), &[] as &[&str]),
             ("tasks__update", update.description(), update.input_schema(), &[]),
             ("tasks__wait", wait.description(), wait.input_schema(), &["on"]),
             ("tasks__delete", delete.description(), delete.input_schema(), &[]),
@@ -1666,8 +2349,8 @@ mod tests {
         let facade = MockTasksFacade::new().into_arc();
         let wait = Wait { facade, slot: lead_slot() };
         for clause in [
-            "A decision wait is the at-convenience channel to the user",
-            "puts the ask here on a board row rather than saying it in prose",
+            "A user wait is the at-convenience channel",
+            "puts the ask on a board row rather than in prose",
             "prose is not a surface",
         ] {
             assert!(
@@ -1763,7 +2446,7 @@ mod tests {
     /// where an existing row is moved and the create's status property is
     /// where a new one is filed, so both say what pending means and name
     /// ownership as the way to set a row aside. Without it, pending reads as
-    /// a parking space and the sweep then dispatches it.
+    /// a parking space the drive then treats as work nobody has taken.
     #[test]
     fn the_task_text_says_pending_is_the_backlog() {
         let facade = MockTasksFacade::new().into_arc();
@@ -1789,7 +2472,8 @@ mod tests {
         for clause in [
             "Defaults to pending, the board's Backlog: work kept to look at later, not by \
              itself an assignment",
-            "The sweep dispatches only unowned ready rows, so take ownership to set one aside",
+            "The drive nudges the lead about unowned ready work, so take ownership to set one \
+             aside",
         ] {
             assert!(
                 status.contains(clause),
@@ -1885,7 +2569,7 @@ mod tests {
                 "for a change, delivered means the PR exists and the delivering worker's own \
                  checks ran at its head",
                 "for a report or a sweep, concluded means it is handed over",
-                "A local commit alone completes nothing",
+                "Being committed is not the claim",
             ] {
                 assert!(
                     text.contains(clause),
@@ -1987,9 +2671,8 @@ mod tests {
     fn the_wait_description_keeps_the_user_decision_mint_with_the_lead() {
         let wait = Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         for clause in [
-            "Only the lead mints a user-decision wait",
-            "a worker that believes the call is the user's hands it to its lead",
-            "a decision a worker parks outlives its answer and the lead cannot close it afterward",
+            "Only the lead raises a user ask",
+            "a worker that believes the call is the person's hands it to its lead",
         ] {
             assert!(
                 wait.description().contains(clause),
@@ -2046,12 +2729,12 @@ mod tests {
             task,
             worked_secs: 0,
             updated_secs_ago: 0,
+            owner_live: true,
+            wait_secs: None,
             marks: crate::board::Marks {
                 ready: false,
                 in_review: false,
                 overdue: false,
-                no_movement: false,
-                waiting_too_long: false,
                 stale: false,
                 to_close: false,
             },
@@ -2073,11 +2756,15 @@ mod tests {
             owner: Some(SessionSlot::worker("TestOrg", "myproj", "w-1")),
             verify: Some(forge_primitives::tasks::Verify::User),
             waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: Some("the words the user answers".to_owned()),
                 on: None,
                 verification: true,
                 parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             attested: Some(Attestation {
@@ -2109,6 +2796,7 @@ mod tests {
                 label: Some("PR #9".to_owned()),
                 target: "https://example.invalid/pull/9".to_owned(),
                 state: None,
+                last_check: None,
                 added_at: SystemTime::UNIX_EPOCH,
             }],
             waiting_on: Some(Waiting {
@@ -2118,6 +2806,10 @@ mod tests {
                 verification: false,
                 parked: true,
                 since: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             }),
             attested: Some(Attestation {
                 evidence: "looks good".to_owned(),
@@ -2127,8 +2819,16 @@ mod tests {
         });
         row.worked_secs = 3_600;
         row.updated_secs_ago = 60;
+        row.task.archived_at = Some(SystemTime::UNIX_EPOCH);
         row.marks.in_review = true;
         row.marks.overdue = true;
+        row.task.evidence = Some(forge_primitives::tasks::Evidence {
+            commit: Some("abc123".to_owned()),
+            path: None,
+            excerpt: None,
+            verified_at: Some(SystemTime::UNIX_EPOCH),
+            problem: None,
+        });
         row.rollup = Some((2, 5));
         row.parent_subject = Some("the epic".to_owned());
         row
@@ -2139,14 +2839,15 @@ mod tests {
     /// finished rows.
     fn listed(out: &ToolOutput) -> (serde_json::Value, Option<String>) {
         let text = text_of(out);
-        let body = text.split_once('\n').expect("a header line then the rows").1;
-        let json = serde_json::from_str(body).expect("the body is the rows array");
+        let body = text.split_once('\n').expect("a header line then the envelope").1;
+        let json = serde_json::from_str(body).expect("the body is the list envelope");
         let tail = out.blocks.get(1).map(block_text).map(str::to_owned);
         (json, tail)
     }
 
+    /// The envelope's `rows`, which is what a card draws.
     fn listed_json(out: &ToolOutput) -> serde_json::Value {
-        listed(out).0
+        listed(out).0["rows"].clone()
     }
 
     fn row_with(id: &str, status: TaskStatus) -> crate::board::BoardRow {
@@ -2174,11 +2875,10 @@ mod tests {
             ("status", "pending"),
             ("owner", "w-1"),
             ("estimate", "2h"),
-            ("worked", "1h"),
         ] {
             assert_eq!(row[key], value, "the compact row carries {key}: {row}");
         }
-        assert_eq!(row["waiting"]["kind"], "decision", "the wait's state stays: {row}");
+        assert_eq!(row["waiting"]["kind"], "user", "the wait's state stays: {row}");
         assert_eq!(row["waiting"]["verification"], true, "including the look gate: {row}");
         for omitted in [
             "detail",
@@ -2187,6 +2887,12 @@ mod tests {
             "parent",
             "parent_subject",
             "updated_ago",
+            "worked",
+            "artifact",
+            "rollup",
+            "verify",
+            "reserved",
+            "links",
             "created_at",
             "updated_at",
         ] {
@@ -2222,9 +2928,9 @@ mod tests {
             "the withheld line is its own block, so the rows stay parseable: {out:?}",
         );
         let (json, tail) = listed(&out);
-        let ids: Vec<&str> = json
+        let ids: Vec<&str> = json["rows"]
             .as_array()
-            .expect("an array of rows")
+            .expect("the rows")
             .iter()
             .map(|row| row["id"].as_str().expect("an id"))
             .collect();
@@ -2258,8 +2964,9 @@ mod tests {
         assert!(!out.is_error, "list succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "a stated status withholds nothing: {out:?}");
         let (json, tail) = listed(&out);
-        assert_eq!(json[0]["id"], "t-done", "the asked-for status is returned: {json}");
-        assert_eq!(json.as_array().expect("an array").len(), 1);
+        let rows = json["rows"].as_array().expect("the rows");
+        assert_eq!(rows[0]["id"], "t-done", "the asked-for status is returned: {json}");
+        assert_eq!(rows.len(), 1);
         assert!(tail.is_none(), "nothing was withheld from a stated status: {tail:?}");
     }
 
@@ -2274,29 +2981,28 @@ mod tests {
         assert!(!out.is_error, "list succeeds: {out:?}");
         let (json, tail) = listed(&out);
         assert!(tail.is_none(), "nothing was withheld from a pending row: {tail:?}");
-        let row = &json[0];
+        let rows = json["rows"].as_array().expect("the rows");
+        let row = &rows[0];
         let mut keys: Vec<&str> =
             row.as_object().expect("a row object").keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
             [
-                "artifact", "estimate", "id", "marks", "owner", "reserved", "rollup", "status",
-                "subject", "verify", "waiting", "worked",
+                "estimate", "evidence", "id", "kind", "marks", "owner", "status", "subject",
+                "waiting",
             ],
             "the compact row is exactly the promised set: {row}",
         );
         for (key, value) in [
-            ("artifact", serde_json::json!("PR #9")),
             ("estimate", serde_json::json!("2h")),
+            ("evidence", serde_json::json!("verified")),
             ("id", serde_json::json!("t-1")),
+            ("kind", serde_json::json!("finite")),
             ("marks", serde_json::json!(["in_review", "overdue"])),
             ("owner", serde_json::json!("w-1")),
-            ("reserved", serde_json::json!("user")),
-            ("rollup", serde_json::json!("2/5")),
             ("status", serde_json::json!("pending")),
             ("subject", serde_json::json!("Merge peers and workers")),
-            ("verify", serde_json::json!("user")),
             (
                 "waiting",
                 serde_json::json!({
@@ -2306,10 +3012,10 @@ mod tests {
                     "parked": true,
                 }),
             ),
-            ("worked", serde_json::json!("1h")),
         ] {
             assert_eq!(row[key], value, "the compact row's {key}: {row}");
         }
+        assert!(row.get("detail").is_none(), "the brief is the detail verb's: {row}");
     }
 
     /// `detail: true` is the whole record, and its promised values are
@@ -2347,6 +3053,189 @@ mod tests {
         );
     }
 
+    /// Every list answer is an envelope: what it carries, how much there
+    /// is, whether it was cut, and the doors that narrow it. A long board
+    /// cannot come back whole by accident.
+    #[tokio::test]
+    async fn the_list_envelope_says_what_it_holds() {
+        let facade = Arc::new(MockTasksFacade::default());
+        facade
+            .rows
+            .lock()
+            .extend((0..25).map(|n| row_with(&format!("t-{n}"), TaskStatus::Pending)));
+        let out = List { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({})))
+            .await;
+        let (json, _) = listed(&out);
+        assert_eq!(json["returned"], 20, "the default limit: {json}");
+        assert_eq!(json["total"], 25, "the filters matched 25: {json}");
+        assert_eq!(json["truncated"], true);
+        assert!(
+            json["narrow"].as_str().is_some_and(|said| said.contains("tasks__get")),
+            "the envelope says where the whole row lives: {json}",
+        );
+
+        let out = List { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "limit": 5 })))
+            .await;
+        let (json, _) = listed(&out);
+        assert_eq!(json["returned"], 5, "a stated limit is honoured: {json}");
+        assert_eq!(json["total"], 25);
+
+        let out = List { facade, slot: lead_slot() }
+            .call(input(serde_json::json!({ "limit": 500 })))
+            .await;
+        let (json, _) = listed(&out);
+        assert_eq!(json["returned"], 25, "the clamp is above the board, so all 25 ride");
+        assert_eq!(json["truncated"], false);
+    }
+
+    /// The detail verb reads one row whole: the brief, the facts, the
+    /// evidence and the history, which the compact list leaves behind.
+    #[tokio::test]
+    async fn the_detail_verb_returns_one_row_whole() {
+        let facade = Arc::new(MockTasksFacade::default());
+        facade.rows.lock().push(populated_row());
+        let out =
+            Get { facade, slot: lead_slot() }.call(input(serde_json::json!({ "id": "t-1" }))).await;
+        assert!(!out.is_error, "get succeeds: {out:?}");
+        let json: serde_json::Value = serde_json::from_str(text_of(&out)).expect("the row is json");
+        assert_eq!(json["id"], "t-1");
+        assert_eq!(json["detail"], "why", "the brief is the detail verb's");
+        assert_eq!(json["evidence"]["verified_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(json["history"], serde_json::json!([]));
+        assert_eq!(json["history_total"], 0);
+        assert_eq!(json["marks"], serde_json::json!(["in_review", "overdue"]));
+        // `tasks__get` promises the links and the archive state: the
+        // evidence's door and the row's shelf are read from the same answer.
+        assert_eq!(json["links"][0]["target"], "https://example.invalid/pull/9");
+        assert_eq!(json["links"][0]["kind"], "pr");
+        assert_eq!(json["archived_at"], "1970-01-01T00:00:00Z");
+    }
+
+    /// The answer verb threads the user's choice and note to the core and
+    /// is the lead's door only.
+    #[tokio::test]
+    async fn answer_threads_the_choice_and_the_note() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Answer { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({
+                "id": "t-1",
+                "choice": "flag it",
+                "note": "until the bench is green",
+                "version": 0,
+            })))
+            .await;
+        assert!(!out.is_error, "answer succeeds: {out:?}");
+        let calls = facade.answered.lock();
+        assert_eq!(calls[0].1, TaskId::from("t-1"));
+        assert_eq!(calls[0].2.as_deref(), Some("flag it"), "the choice is the value the tool sent");
+        assert_eq!(calls[0].5.as_deref(), Some("until the bench is green"));
+    }
+
+    /// The answer door carries one value per kind: text for a
+    /// clarification and a teaching (with its lesson), a disposition for
+    /// an exception, and the tool refuses when two are sent at once.
+    #[tokio::test]
+    async fn answer_threads_the_value_the_ask_kind_needs() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let answer = Answer { facade: facade.clone(), slot: lead_slot() };
+        let out = answer
+            .call(input(serde_json::json!({
+                "id": "t-1",
+                "text": "Granite",
+                "version": 0,
+            })))
+            .await;
+        assert!(!out.is_error, "a clarification's text succeeds: {out:?}");
+        assert_eq!(facade.answered.lock()[0].3.as_deref(), Some("Granite"), "the text rides it");
+
+        let out = answer
+            .call(input(serde_json::json!({
+                "id": "t-2",
+                "disposition": "retry",
+                "version": 0,
+            })))
+            .await;
+        assert!(!out.is_error, "an exception's disposition succeeds: {out:?}");
+        assert_eq!(facade.answered.lock()[1].4.as_deref(), Some("retry"));
+
+        let out = answer
+            .call(input(serde_json::json!({
+                "id": "t-3",
+                "text": "report the flake",
+                "lesson": "never retry a flake twice",
+                "version": 0,
+            })))
+            .await;
+        assert!(!out.is_error, "a teaching's lesson succeeds: {out:?}");
+        assert_eq!(facade.answered.lock()[2].3.as_deref(), Some("report the flake"));
+        assert_eq!(facade.answered.lock()[2].5.as_deref(), Some("never retry a flake twice"));
+
+        let out = answer
+            .call(input(serde_json::json!({
+                "id": "t-4",
+                "choice": "this",
+                "text": "that",
+                "version": 0,
+            })))
+            .await;
+        assert!(out.is_error, "two values at once is refused");
+        assert!(text_of(&out).contains("exactly one"), "{:?}", text_of(&out));
+    }
+
+    /// The policy door lists the project's notes and writes one; a write
+    /// states both halves.
+    #[tokio::test]
+    async fn policy_lists_and_writes_with_both_halves() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let policy = Policy { facade: facade.clone(), slot: lead_slot() };
+        let out = policy.call(input(serde_json::json!({}))).await;
+        assert!(!out.is_error, "a bare call lists: {out:?}");
+        assert!(text_of(&out).contains("\"notes\""), "the answer is the set: {:?}", text_of(&out));
+
+        let out = policy
+            .call(input(serde_json::json!({
+                "class": "ci-flake",
+                "text": "never retry a flake twice",
+            })))
+            .await;
+        assert!(!out.is_error, "the lead writes a note: {out:?}");
+        assert!(text_of(&out).contains("ci-flake"));
+
+        let out = policy.call(input(serde_json::json!({ "class": "ci-flake" }))).await;
+        assert!(out.is_error, "half a write is refused");
+        assert!(text_of(&out).contains("both"), "{:?}", text_of(&out));
+    }
+
+    #[tokio::test]
+    async fn a_worker_is_not_offered_the_answer_door() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let worker = SessionSlot::worker("TestOrg", "myproj", "w-1");
+        let out = Answer { facade: facade.clone(), slot: worker }
+            .call(input(serde_json::json!({ "id": "t-1", "choice": "flag it", "version": 0 })))
+            .await;
+        assert!(out.is_error, "a decision is the user's to answer through the lead");
+        assert!(facade.answered.lock().is_empty(), "and the facade is never reached");
+    }
+
+    /// A versioned update threads the version the caller read down to the
+    /// core's own check.
+    #[tokio::test]
+    async fn update_threads_the_version_it_was_given() {
+        let facade = Arc::new(MockTasksFacade::default());
+        *facade.update_result.lock() = Some(Ok(sample_task()));
+        let out = Update { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({
+                "id": "t-1",
+                "version": 7,
+                "active_form": "Fixing the rail",
+            })))
+            .await;
+        assert!(!out.is_error, "update succeeds: {out:?}");
+        assert_eq!(facade.updated.lock()[0].2.version, Some(7));
+    }
+
     /// The compact default, the terminal exclusion and the detail opt-in
     /// are shipped text a session reads as it reaches for the tool, so
     /// every lever is named where the caller meets it.
@@ -2354,11 +3243,14 @@ mod tests {
     fn the_list_description_states_the_compact_default_and_the_detail_opt_in() {
         let tool = List { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         for clause in [
-            "The default read returns pending, in_progress, waiting and failed rows",
-            "A completed or canceled row is left out",
+            "The default read carries pending, in_progress, waiting and failed rows",
+            "a completed or canceled row is history and is left out",
             "the read ends with a line counting what was withheld by status",
-            "a `status` filter overrides that default",
+            "A `status` filter overrides that default",
             "`detail: true`",
+            "`returned`",
+            "`truncated`",
+            "The default limit is 20",
         ] {
             assert!(
                 tool.description().contains(clause),
@@ -2388,21 +3280,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_listed_row_carries_worked_time_and_its_marks() {
+    async fn a_listed_row_carries_its_marks_and_evidence_state() {
         let facade = Arc::new(MockTasksFacade::default());
         let mut row = board_row(sample_task());
-        row.worked_secs = 3 * 3_600;
-        row.updated_secs_ago = 12 * 60;
         row.marks.in_review = true;
         row.marks.overdue = true;
+        row.task.evidence = Some(forge_primitives::tasks::Evidence {
+            commit: Some("abc123".to_owned()),
+            path: None,
+            excerpt: None,
+            verified_at: Some(SystemTime::UNIX_EPOCH),
+            problem: None,
+        });
         facade.rows.lock().push(row);
         let out = List { facade, slot: lead_slot() }.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error, "list succeeds: {out:?}");
-        let text = text_of(&out);
-        let body = text.split_once('\n').expect("a header line then the rows").1;
-        let json: serde_json::Value =
-            serde_json::from_str(body).expect("the body is the rows array");
-        assert_eq!(json[0]["worked"], "3h", "worked time in the board's words: {json}");
+        let json = listed_json(&out);
         let marks: Vec<&str> = json[0]["marks"]
             .as_array()
             .expect("marks array")
@@ -2411,6 +3304,10 @@ mod tests {
             .collect();
         assert!(marks.contains(&"overdue"), "marks name the facts: {marks:?}");
         assert!(marks.contains(&"in_review"), "marks name the facts: {marks:?}");
+        assert_eq!(
+            json[0]["evidence"], "verified",
+            "the list carries the evidence's own state: {json}",
+        );
     }
 
     #[tokio::test]
@@ -2436,7 +3333,7 @@ mod tests {
         // The default mock finds nothing, so this is the not-found path.
         let facade = Arc::new(MockTasksFacade::default());
         let out = Delete { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "nope" })))
+            .call(input(serde_json::json!({ "id": "nope", "version": 0 })))
             .await;
         assert!(out.is_error, "an unknown id is an error, not a no-op");
     }
@@ -2452,7 +3349,7 @@ mod tests {
             id: "t-9".to_owned(),
             project: "otherproj".to_owned(),
         }));
-        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9", "version": 0 }))).await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -2461,7 +3358,7 @@ mod tests {
         );
 
         *facade.delete_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "version": 0 }))).await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -2484,17 +3381,19 @@ mod tests {
         let list = List { facade: facade.clone(), slot: slot.clone() };
         let delete = Delete { facade: facade.clone(), slot: slot.clone() };
         let claim = Claim { facade: facade.clone(), slot: slot.clone() };
-        let wait = Wait { facade, slot };
+        let wait = Wait { facade: facade.clone(), slot: slot.clone() };
+        let policy = Policy { facade, slot };
         assert_eq!(create.name(), "tasks__create");
         assert_eq!(update.name(), "tasks__update");
         assert_eq!(list.name(), "tasks__list");
         assert_eq!(delete.name(), "tasks__delete");
         assert_eq!(claim.name(), "tasks__claim");
+        assert_eq!(policy.name(), "tasks__policy");
         assert_eq!(wait.name(), "tasks__wait");
     }
 
     #[tokio::test]
-    async fn claim_by_epic_threads_the_epic_and_echoes_the_row() {
+    async fn claim_threads_the_stated_id_and_echoes_the_row() {
         let facade = Arc::new(MockTasksFacade::default());
         let mut task = sample_task();
         task.status = TaskStatus::InProgress;
@@ -2503,13 +3402,13 @@ mod tests {
         let slot = SessionSlot::worker("TestOrg", "myproj", "w-1");
         let out = Claim { facade: facade.clone(), slot }
             .call(input(serde_json::json!({
-                "epic": "epic-1"
+                "id": "t-1",
+                "version": 0
             })))
             .await;
         assert!(!out.is_error, "claim succeeds: {out:?}");
         let calls = facade.claimed.lock();
-        assert_eq!(calls[0].1, None, "no id carried");
-        assert_eq!(calls[0].2.as_deref(), Some("epic-1"));
+        assert_eq!(calls[0].1, "t-1", "the stated id reaches the facade");
         let json: serde_json::Value =
             serde_json::from_str(text_of(&out)).expect("the result is the claimed record");
         assert_eq!(json["status"], "in_progress");
@@ -2517,16 +3416,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_with_both_id_and_epic_is_refused_without_touching_the_facade() {
+    async fn a_claim_with_no_id_is_refused_without_touching_the_facade() {
         let facade = Arc::new(MockTasksFacade::default());
-        let out = Claim { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "epic": "epic-1" })))
-            .await;
-        assert!(out.is_error, "exactly one of id or epic");
         let out = Claim { facade: facade.clone(), slot: lead_slot() }
             .call(input(serde_json::json!({})))
             .await;
-        assert!(out.is_error, "neither is not one either");
+        assert!(out.is_error, "a claim names the row it wants");
         assert!(facade.claimed.lock().is_empty(), "invalid input never reaches the facade");
     }
 
@@ -2542,7 +3437,7 @@ mod tests {
             id: "t-9".to_owned(),
             project: "otherproj".to_owned(),
         }));
-        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9", "version": 0 }))).await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -2551,7 +3446,7 @@ mod tests {
         );
 
         *facade.claim_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "version": 0 }))).await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -2568,7 +3463,7 @@ mod tests {
         *facade.claim_result.lock() =
             Some(Err(TasksError::Refused("w-1 holds this row".to_owned())));
         let out = Claim { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1" })))
+            .call(input(serde_json::json!({ "id": "t-1", "version": 0 })))
             .await;
         assert!(out.is_error, "the claim is refused");
         assert!(
@@ -2589,8 +3484,9 @@ mod tests {
             id: "t-9".to_owned(),
             project: "otherproj".to_owned(),
         }));
-        let elsewhere =
-            tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource" }))).await;
+        let elsewhere = tool
+            .call(input(serde_json::json!({ "id": "t-9", "kind": "resource", "version": 0 })))
+            .await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -2599,7 +3495,9 @@ mod tests {
         );
 
         *facade.wait_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource" }))).await;
+        let absent = tool
+            .call(input(serde_json::json!({ "id": "t-9", "kind": "resource", "version": 0 })))
+            .await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -2617,6 +3515,7 @@ mod tests {
                 "kind": "dependency",
                 "detail": "the board read has to land first",
                 "on": "t-9",
+                "version": 0,
             })))
             .await;
         assert!(!out.is_error, "wait succeeds: {out:?}");
@@ -2630,7 +3529,7 @@ mod tests {
     async fn a_dependency_wait_without_on_is_refused() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Wait { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "kind": "dependency" })))
+            .call(input(serde_json::json!({ "id": "t-1", "kind": "dependency", "version": 0 })))
             .await;
         assert!(out.is_error, "a dependency wait names its blocker");
         assert!(facade.waited.lock().is_empty(), "invalid input never reaches the facade");

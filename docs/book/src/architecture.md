@@ -325,9 +325,11 @@ own PTY - a shell the seat already reaches through Bash, so there is nothing
 a project could withhold of it that Bash does not already grant. Two groups vary by session kind: inside `agents`, any session
 may `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
-`capacity` - are lead-only; and inside `tasks`, `tasks__approve` is the
-lead's own door (it attests a look the user already gave) and is not
-offered to a worker. One tool does too: `browser_end_host` is a lead's own
+`capacity` - are lead-only; and inside `tasks`, `tasks__approve` (it
+attests a look the user already gave), `tasks__answer` (it records the
+user's answer, the value their ask kind needs) and `tasks__policy` (it
+reads and writes the project's policy notes) are the lead's own doors and
+are not offered to a worker. One tool does too: `browser_end_host` is a lead's own
 door, offered to every session and refused to a worker, because it ends a
 browser host every session on the profile shares. Reach is the same for
 both: a target is a slot, `(org, project, label)`, so a worker addresses
