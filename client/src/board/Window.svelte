@@ -41,15 +41,15 @@
   const words: Record<string, string> = $state({});
   /** Whether a card's note box is open: a card reads as an ask, not a form. */
   const noteOpen: Record<string, boolean> = $state({});
-  /** Whether a card's evidence is expanded: one summary line until asked. */
+  /** Whether a card's evidence is expanded: one line until asked. */
   const evidenceOpen: Record<string, boolean> = $state({});
   /** Which digest line is open on its items, by the line's own key. */
   const digestOpen: Record<string, boolean> = $state({});
   /** The deferral the person chose, per row, so the control names it. */
   const snoozeChoice: Record<string, string> = $state({});
-
-  /** How much of the evidence a collapsed card shows before it is expanded. */
-  const SUMMARY_CHARS = 90;
+  /** Whether a card's evidence line is actually clipped at its width: the
+   *  expander is drawn only when there is something more to show. */
+  const clipped: Record<string, boolean> = $state({});
 
   /** The two deferrals the snooze control offers, one menu, one press each. */
   const SNOOZE_OPTIONS = [
@@ -111,8 +111,33 @@
     return `nothing needs you - checked ${at} · ${agents} · ${sampleClaim(attention)}`;
   }
 
-  function summaryOf(text: string): string {
-    return text.length > SUMMARY_CHARS ? `${text.slice(0, SUMMARY_CHARS).trimEnd()}...` : text;
+  /** Measure whether an evidence line is clipped, re-checked on resize and
+   *  whenever the line's words change: a character count cannot know the
+   *  card's width, and a control that re-renders the same string is worse
+   *  than none. The text rides the parameter so a live rewrite re-measures. */
+  function measureEvidence(
+    node: HTMLElement,
+    params: [id: string, text: string],
+  ): {
+    update: () => void;
+    destroy: () => void;
+  } {
+    const [id] = params;
+    const check = (): void => {
+      clipped[id] = node.scrollWidth > node.clientWidth + 1;
+    };
+    check();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(check);
+    observer?.observe(node);
+    window.addEventListener('resize', check);
+    return {
+      update: check,
+      destroy(): void {
+        observer?.disconnect();
+        window.removeEventListener('resize', check);
+        clipped[id] = false;
+      },
+    };
   }
 
   function act(command: Record<string, Record<string, unknown>>): void {
@@ -261,21 +286,25 @@
               <div class="w-ev" class:open={expanded}>
                 {#if chip !== null}<span class="b-chip {chip.tone}">{chip.label}</span>{/if}
                 {#if card.evidence !== null}
-                  <!-- The full line rides the title whatever the card's
-                       width does to the drawn one, and `more` is always
-                       drawn: a character count cannot know the card's
-                       width, and a touch reader has no hover for the
-                       title. -->
-                  <span class="w-ev-text" title={card.evidence}
-                    >{expanded ? card.evidence : summaryOf(card.evidence)}</span
+                  <!-- The whole line is drawn and the CSS clips it; the
+                       action measures whether it is actually clipped, so
+                       `more` appears only when it has something to show
+                       (or an excerpt is folded behind it). The full line
+                       always rides the title. -->
+                  <span
+                    class="w-ev-text"
+                    title={card.evidence}
+                    use:measureEvidence={[card.id, card.evidence]}>{card.evidence}</span
                   >
-                  <button
-                    type="button"
-                    class="w-more"
-                    aria-expanded={expanded}
-                    onclick={() => (evidenceOpen[card.id] = !expanded)}
-                    >{expanded ? 'less' : 'more'}</button
-                  >
+                  {#if card.excerpt !== null || clipped[card.id] === true || expanded}
+                    <button
+                      type="button"
+                      class="w-more"
+                      aria-expanded={expanded}
+                      onclick={() => (evidenceOpen[card.id] = !expanded)}
+                      >{expanded ? 'less' : 'more'}</button
+                    >
+                  {/if}
                 {/if}
                 <!-- The excerpt a lead's quote folded away keeps its own
                      line under it, once the reader asks for the rest. -->
