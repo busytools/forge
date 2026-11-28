@@ -343,20 +343,22 @@ one that continues from a brief - at a turn boundary past 85% of its window
 by default, after a compaction, or when one is asked for - the successor's
 transcript opens with the brief forge delivered, and that prompt draws as
 the handoff procedure: the row wears the handoff's own mark, names itself,
-and holds the whole brief behind its open. The brief is the ground truth
-forge read off the transcript, git, the board, the worker registry and the
-cron store - the seat, the working directory, the branch, the role, the
-files read and changed, the rows the seat owns and their links, the
-transcript the record names, and what was still running when the seat
-changed: the other live workers, the project's crons and its open board
-rows, each with the door that resumes it, beside the live agents,
-background tasks, monitors and the session's process tree this seat started,
-so the successor knows what to resume and what the swap stopped - then the
-note the handing-over session wrote, or its closing text
-under a `source` label when the exit call carried none: where things stand,
-what is in flight with the id that names it, what failed, and the exact next
-action with the file, command or row it starts at, so the successor opens
-what the note names rather than reading a retelling of it.
+and holds the whole brief behind its open. PART 1 is what forge captured at
+the swap and what no query can reconstruct - the seat, the working directory,
+the branch and HEAD at that moment, the role, how much of the tree was
+uncommitted, and the transcript the record names - with one line saying the
+live state is queried rather than printed: the board, the workers, the
+crons and the files each have their tool, so the successor asks rather than
+reading a list that was already going stale. PART 2 is the note the
+handing-over session wrote, or its closing text under a `source` label when
+the exit call carried none: where things stand, what is in flight with the
+id that names it, the decisions still governing the work and why, what
+failed, and the exact next action anchored at its repo root or worktree with
+the ids that name the work and the commit it is pinned to, so the successor
+opens what the note names rather than reading a retelling of it. The note's
+live-children line carries the session's own subagents, background commands
+and worktrees: the swap stops the first two, and no query reconstructs their
+transcripts or output.
 
 **The previous conversation goes with the seat that left.** The chat clears
 on the swap rather than carrying the old turns above a seam: the successor

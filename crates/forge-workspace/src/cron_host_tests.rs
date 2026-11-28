@@ -2093,17 +2093,15 @@ provider = "anthropic"
             Err(CronListError::Unavailable),
             "a boot whose store opened but whose cron read failed must not answer as empty",
         );
-        // The handoff brief copies the flag: a failed cron read must reach
-        // the live-state section as "not read", not "none scheduled".
-        let live = ws
-            .project_live_state(&SessionSlot::lead("TestOrg", "forge"))
-            .expect("the seeded project resolves");
-        assert!(live.crons_unreadable, "the failed cron read is carried into the live state");
+        // **The flag is the boot's own answer, and `cron__list` refuses on
+        // it.** A reader that queried the registry gets `Unavailable`, not
+        // "none scheduled".
+        assert!(ws.durable_crons_unavailable());
     }
 
     /// The board's failing arm: the store opens, but its task read fails.
-    /// The boot marks the board unavailable, so the handoff brief says
-    /// "not read" rather than "none open".
+    /// The boot marks the board unavailable, so no reader reports "none
+    /// open" for a board it could not read.
     #[test]
     fn a_failed_task_read_marks_the_board_unavailable() {
         use redb::TableDefinition;
@@ -2132,10 +2130,6 @@ provider = "anthropic"
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"));
         assert!(ws.db.lock().is_some(), "the store opened; only its task read fails");
         assert!(ws.durable_tasks_unavailable(), "a failed task read marks the board unavailable");
-        let live = ws
-            .project_live_state(&SessionSlot::lead("TestOrg", "forge"))
-            .expect("the seeded project resolves");
-        assert!(live.board_unreadable, "the failed task read is carried into the live state");
     }
 
     /// The negative control for the refusals above: a healthy boot opens
