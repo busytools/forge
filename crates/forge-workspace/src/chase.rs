@@ -8,13 +8,15 @@
 //! ask on the user is never chased, a resource wait is checked, a dependency
 //! chase goes to the blocker's owner).
 //!
-//! **One cadence, not three.** A finite overrun asks once and parks the
-//! row, and the lead hears the escalation once if the ask goes unanswered;
-//! every other held state repeats at `CHASE_CADENCE_SECS` until it
-//! clears. **The chase log is the whole slate**: every naming is deduped
-//! by it, so a restart re-reads it rather than re-firing, and a state that
-//! clears has its naming forgotten - off the log, where a fresh process
-//! reads - so a recurrence is named at once, whatever happened in between.
+//! **One cadence, not three.** An open finite overrun asks once - parking
+//! an in-progress row - and the lead hears the escalation once per
+//! estimate; the stall, death, close, retro and unaccounted rungs repeat
+//! at `CHASE_CADENCE_SECS` while their state holds, and the movement and
+//! new-input namings fire once per touch or check. **The chase log is the
+//! whole slate**: every naming is deduped by it, so a restart re-reads it
+//! rather than re-firing, and a state that clears has its naming
+//! forgotten - off the log, where a fresh process reads - so a recurrence
+//! is named at once, whatever happened in between.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
 //! owner the lead is; with every seat asleep the mark alone stands. A
@@ -93,8 +95,9 @@ fn since_secs(at: SystemTime, now: SystemTime) -> u64 {
     now.duration_since(at).map_or(u64::MAX, |d| d.as_secs())
 }
 
-/// Whether `rung` already fired for `id` and this subject - a restated
-/// estimate changes the subject, which arms the nudge again.
+/// Whether `rung` already fired for `id` and this subject - an estimate
+/// restated to a different duration changes the subject, which arms the
+/// nudge again.
 fn fired_already(fired: &[TaskChase], rung: ChaseRung, id: &TaskId, subject: Option<&str>) -> bool {
     fired.iter().any(|chase| {
         chase.rung == rung
@@ -174,9 +177,10 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 /// hears: an ask on the user is never chased, a resource wait is checked,
 /// and a dependency chase goes to the blocker's owner.
 ///
-/// A finite overrun asks once and parks the row (the sweep does the
-/// write); the lead hears once if the ask goes unanswered past the
-/// cadence, and then the chase stops for that estimate.
+/// An open finite overrun asks once, parking an in-progress row (the sweep
+/// does the write); the lead hears the escalation once per estimate once
+/// the ask has had its cadence, and then the chase stops for that
+/// estimate.
 pub(crate) fn crossings(
     lead: &SessionSlot,
     rows: &[BoardRow],
@@ -193,14 +197,17 @@ pub(crate) fn crossings(
         let id = &row.task.id;
         let estimate = row.task.estimate.as_ref().filter(|e| e.secs > 0);
         let running = row.task.status == TaskStatus::InProgress;
+        let open = !row.task.status.is_terminal();
         let over = row.task.kind == forge_primitives::tasks::TaskKind::Finite
             && estimate.is_some_and(|estimate| row.worked_secs > estimate.secs);
         let wait = row.task.waiting_on.as_ref();
         let parked = wait.is_some_and(|wait| wait.parked);
 
-        // Signal 1a: finite work past its estimate owes a re-plan. The ask
-        // is one per estimate and parks the row; the sweep writes the park.
-        if let Some(estimate) = estimate.filter(|_| over)
+        // Signal 1a: open finite work past its estimate owes a re-plan; a
+        // terminal row's numbers are history. The ask is one per estimate and
+        // parks an in-progress row; the sweep writes the park.
+        if open
+            && let Some(estimate) = estimate.filter(|_| over)
             && !fired_already(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
         {
             out.push(Crossing {
@@ -218,9 +225,11 @@ pub(crate) fn crossings(
                 ),
             });
         }
-        // The escalation: once per estimate, and only after the ask had its
-        // cadence unanswered. Then this estimate is done being chased.
-        if over
+        // The escalation: once per estimate, only while the row is still
+        // open, and only once the ask has had its cadence. Then this
+        // estimate is done being chased.
+        if open
+            && over
             && let Some(estimate) = estimate
             && !fired_already(fired, ChaseRung::Escalate, id, Some(&estimate.secs.to_string()))
             && let Some(asked) =
@@ -644,9 +653,10 @@ impl Workspace {
             }
             let crossings = crossings(&lead, &rows, &history, &unaccounted, &fired, now);
             for crossing in crossings {
-                // The re-plan ask is a state, not a message alone: the row
-                // is parked waiting on its owner before the owner hears, so
-                // the board shows the same thing the message says.
+                // The re-plan ask is a state, not a message alone: an
+                // in-progress row is parked waiting on its owner before the
+                // owner hears, so the board shows the same thing the message
+                // says.
                 if crossing.rung == ChaseRung::EstimateNudge
                     && let Some(id) = &crossing.task_id
                 {
@@ -953,7 +963,7 @@ mod tests {
         assert_eq!(deliver.seen.lock().len(), 1, "and the naming stands");
     }
 
-    /// The drifted worker's naming repeats at the 5-minute cadence while
+    /// The drifted worker's naming repeats at the 30-minute cadence while
     /// it stays drifted.
     #[test]
     fn the_unaccounted_naming_repeats_at_its_cadence() {
@@ -1063,8 +1073,8 @@ mod tests {
         assert_eq!(sweep(&ws, &deliver, 5010), 1, "the new failure is named at once");
     }
 
-    /// The 1x overrun nudge is once per estimate: a restated estimate
-    /// arms it again.
+    /// The 1x overrun nudge is once per estimate: a restated estimate of a
+    /// different duration arms it again.
     #[test]
     fn a_restated_estimate_arms_the_overrun_nudge_again() {
         let dir = tempdir().expect("tempdir");
@@ -1094,8 +1104,8 @@ mod tests {
         assert_eq!(says(&deliver, "has worked"), 2, "once per estimate, not per sweep");
     }
 
-    /// The 1.5x escalation repeats every five minutes while the row
-    /// stays over.
+    /// The escalation fires once per estimate, a cadence after the ask,
+    /// while the row stays open.
     #[test]
     fn the_escalation_fires_once_after_the_ask_waits_out_the_cadence() {
         let dir = tempdir().expect("tempdir");
@@ -1123,6 +1133,82 @@ mod tests {
             1,
             "and the chase stops after that, however long the overrun holds",
         );
+    }
+
+    /// A terminal row over its estimate is never chased: a closed row's
+    /// numbers are history. A failed row still draws its death.
+    #[test]
+    fn a_terminal_row_over_its_estimate_is_not_chased() {
+        for status in [TaskStatus::Completed, TaskStatus::Canceled, TaskStatus::Failed] {
+            let dir = tempdir().expect("tempdir");
+            let ws = fixture(dir.path());
+            let _lead_rx = live_lead(&ws);
+            let mut row = task("t-1", status);
+            row.estimate = Some(Estimate { words: "10s".to_owned(), secs: 10 });
+            row.updated_at = epoch(100);
+            ws.seed_test_task(row);
+            append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+            append_transition(&ws, "t-1", TaskStatus::InProgress, status, 100);
+            let rows = ws.board_rows(PROJECT, epoch(200), WINDOW);
+            let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+            assert!(
+                held.worked_secs > held.task.estimate.as_ref().expect("estimate").secs,
+                "{status:?}: the fixture is over its estimate",
+            );
+            let deliver = Recording::default();
+
+            sweep(&ws, &deliver, 200);
+            assert_eq!(
+                says(&deliver, "estimate"),
+                0,
+                "{status:?}: no estimate text is delivered: {:?}",
+                deliver.seen.lock(),
+            );
+            assert!(
+                ws.chases_for_project(PROJECT)
+                    .iter()
+                    .all(|chase| chase.rung != ChaseRung::EstimateNudge),
+                "{status:?}: no nudge is logged for a terminal row: {:?}",
+                ws.chases_for_project(PROJECT),
+            );
+            if status == TaskStatus::Failed {
+                assert_eq!(says(&deliver, "failed"), 1, "the death rung is the only delivery");
+            } else {
+                assert_eq!(deliver.seen.lock().len(), 0, "{status:?}: nothing is delivered");
+            }
+
+            // The ask landed while the row was open and the row closed before
+            // the cadence ran out: the escalation reads the logged ask.
+            ws.record_chase(&TaskChase {
+                task_id: Some(TaskId::from("t-1")),
+                subject: Some("10".to_owned()),
+                project_name: PROJECT.to_owned(),
+                rung: ChaseRung::EstimateNudge,
+                at: epoch(100),
+            });
+            assert!(
+                ws.chases_for_project(PROJECT).iter().any(|chase| {
+                    chase.rung == ChaseRung::EstimateNudge
+                        && chase.task_id == Some(TaskId::from("t-1"))
+                        && chase.subject.as_deref() == Some("10")
+                }),
+                "{status:?}: the logged ask is the escalation's precondition",
+            );
+            sweep(&ws, &deliver, 201 + CHASE_CADENCE_SECS);
+            assert_eq!(
+                says(&deliver, "estimate"),
+                0,
+                "{status:?}: no estimate text after the cadence: {:?}",
+                deliver.seen.lock(),
+            );
+            assert!(
+                ws.chases_for_project(PROJECT)
+                    .iter()
+                    .all(|chase| chase.rung != ChaseRung::Escalate),
+                "{status:?}: no escalation is logged for a terminal row: {:?}",
+                ws.chases_for_project(PROJECT),
+            );
+        }
     }
 
     /// A row parked on the user - a decision wait, or the look's own

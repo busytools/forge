@@ -619,12 +619,12 @@ pub struct TaskTransition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChaseRung {
-    /// A finite row's worked time passed its estimate: the one re-plan ask
-    /// to its owner (which parks the row), then nothing until an estimate
-    /// is restated.
+    /// An open finite row's worked time passed its estimate: the one
+    /// re-plan ask to its owner (which parks an in-progress row), then
+    /// nothing until an estimate is restated.
     EstimateNudge,
-    /// The re-plan ask went unanswered past the cadence: the lead hears
-    /// once.
+    /// An open row still past its estimate 30 minutes after its re-plan
+    /// ask: the lead hears once per estimate.
     Escalate,
     QueueStall,
     WaitStall,
@@ -656,8 +656,8 @@ pub struct TaskChase {
     pub task_id: Option<TaskId>,
     /// The rung's subject where a row id does not identify it: the
     /// worker a seat-level rung names, or the estimate a nudge fired
-    /// against - so a restated estimate arms the nudge again. `default`
-    /// reads a row written before the field.
+    /// against - so an estimate restated to a different duration arms the
+    /// nudge again. `default` reads a row written before the field.
     #[serde(default)]
     pub subject: Option<String>,
     pub project_name: String,
