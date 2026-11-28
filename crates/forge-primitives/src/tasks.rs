@@ -437,12 +437,17 @@ pub struct Evidence {
     pub path: Option<String>,
     /// The project lead's own verification, in words. It is a claim form
     /// of its own: when present and non-empty, the mechanical check is
-    /// skipped and only the project's lead seat may move the row with it.
-    /// A worker cannot vouch for its own artifact.
+    /// skipped and only the project's lead seat (or the user's own
+    /// approve) may move the row with it. A worker cannot vouch for its
+    /// own artifact.
     #[serde(default)]
     pub lead_verified: Option<String>,
     #[serde(default)]
     pub excerpt: Option<String>,
+    /// When the claim last verified: the gate's own check of the artifact,
+    /// or the moment the project lead's word landed for one the gate
+    /// cannot check (the quote rides `lead_verified`). Absence is never
+    /// success, and an unchecked claim reads as unknown.
     #[serde(default)]
     pub verified_at: Option<SystemTime>,
     #[serde(default)]
@@ -990,6 +995,18 @@ mod tests {
         )
         .expect("a block written before the field existed still reads");
         assert_eq!(older.lead_verified, None, "absence is no lead verification");
+
+        // The field's own key: a reader of the wire finds the lead's word
+        // under `lead_verified`, not folded into the excerpt.
+        let vouched = Evidence {
+            lead_verified: Some("read the sibling repo at this sha".to_owned()),
+            ..evidence.clone()
+        };
+        let json = serde_json::to_value(&vouched).expect("serialize");
+        assert_eq!(
+            json["lead_verified"], "read the sibling repo at this sha",
+            "the lead's verification crosses the wire under its own key",
+        );
 
         let unchecked = Evidence { verified_at: None, problem: None, ..evidence.clone() };
         let back: Evidence =

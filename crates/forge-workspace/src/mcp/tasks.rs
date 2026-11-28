@@ -845,9 +845,12 @@ fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-/// The evidence's own state, in one word: checked and passed, checked and
-/// refused, or not checked at all. Absence of a verdict is `unknown`, never
-/// success.
+/// The evidence's own state, in one word: verified, refused, or not
+/// checked at all. `verified` covers both what the stamp covers - the
+/// gate's own check of the artifact, and the project lead's word for one
+/// the check cannot reach - because both are stamped and both stand
+/// behind the completion; the block's `lead_verified` says which it was.
+/// Absence of a verdict is unknown, never success.
 fn evidence_state(evidence: &forge_primitives::tasks::Evidence) -> &'static str {
     match (&evidence.verified_at, &evidence.problem) {
         (Some(_), _) => "verified",

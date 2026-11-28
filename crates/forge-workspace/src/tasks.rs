@@ -116,15 +116,19 @@ pub(crate) enum MoveError {
     /// A completion claim carries no evidence at all: absence is never
     /// success, so there is nothing for forge to check.
     EvidenceMissing,
+    /// The same absence on the project lead's own move. The refusal names
+    /// `lead_verified` and the stale-catalogue respawn: a session resumed
+    /// from before the field existed drops it before forge sees it, so a
+    /// lead who stated it hears why it never arrived.
+    EvidenceMissingLead,
     /// The evidence names an artifact the project's repository does not
     /// hold, or the check could not run. The reason is the check's own.
     EvidenceUnverified(String),
     /// A completion moved by the project's own lead failed the artifact
-    /// check. The refusal carries the stale-catalogue hint: a session
-    /// resumed from before `lead_verified` existed keeps its spawn-time
-    /// tool schema, so the field is dropped before forge sees it and the
-    /// refusal would otherwise read as a plain missing commit. The reason
-    /// is the check's own.
+    /// check. The refusal carries a conditional stale-catalogue hint: a
+    /// session resumed from before `lead_verified` existed keeps its
+    /// spawn-time tool schema, so a stated field can be dropped before
+    /// forge sees it. The reason is the check's own, and it leads.
     EvidenceUnverifiedLead(String),
     /// `lead_verified` came from a session that is not the project's
     /// lead: only the lead may vouch for an artifact the gate cannot
@@ -201,9 +205,10 @@ fn parked_on_look(task: &Task) -> bool {
 }
 
 /// Whether `by` is the project's own lead seat: the one seat that may
-/// stand behind an artifact the mechanical check cannot reach. A lead of
-/// another project is not this project's lead, so the project name is
-/// part of the match.
+/// stand behind an artifact the mechanical check cannot reach. Project
+/// names are unique across orgs - `forge.toml` keys a project by the
+/// name - so the name is the whole comparison. A lead of another
+/// project is not this project's lead.
 fn moved_by_project_lead(by: &By, project_name: &str) -> bool {
     matches!(by, By::Seat(slot) if slot.is_lead() && slot.project() == project_name)
 }
@@ -445,19 +450,27 @@ impl std::fmt::Display for MoveError {
                 "the completion's evidence did not verify: {reason}. Fix the artifact or the \
                  evidence and move the row again"
             ),
+            Self::EvidenceMissingLead => write!(
+                f,
+                "this row names no evidence for its completion; state `evidence` with the \
+                 commit (sha), the path the work left, or `lead_verified`, your own \
+                 verification of an artifact the repository check cannot reach. If you meant \
+                 to state `lead_verified`, a session resumed from before that field existed \
+                 carries its spawn-time tool schema and drops it: respawn the session, state \
+                 it, and move the row again"
+            ),
             Self::EvidenceUnverifiedLead(reason) => write!(
                 f,
                 "the completion's evidence did not verify: {reason}. Fix the artifact or the \
-                 evidence and move the row again. If the artifact is outside the project's \
-                 repository and you are its lead, a session resumed from before \
-                 `lead_verified` existed carries its spawn-time tool schema and drops the \
-                 field: respawn the session to pick it up, then state `lead_verified` and \
-                 move the row again"
+                 evidence and move the row again. If you meant to state `lead_verified`, a \
+                 session resumed from before that field existed carries its spawn-time tool \
+                 schema and drops it: respawn the session, state it, and move the row again"
             ),
             Self::LeadVerificationLeadOnly => write!(
                 f,
                 "only the project's lead may state `lead_verified`; this session is not that \
-                 seat, and a worker cannot vouch for its own artifact"
+                 seat. A worker completes on the artifact itself, and asks its lead to vouch \
+                 when the artifact is outside the repository"
             ),
             Self::LeadVerificationEmpty => write!(
                 f,
@@ -974,7 +987,15 @@ impl Workspace {
                 evidence.commit.as_deref().map(str::trim).filter(|value| !value.is_empty());
             let path = evidence.path.as_deref().map(str::trim).filter(|value| !value.is_empty());
             if commit.is_none() && path.is_none() {
-                return Err(MoveError::EvidenceMissing);
+                // The lead's own missing claim names `lead_verified` and
+                // the respawn: the field can be dropped before forge sees
+                // it, and "state the commit or the path" cannot work for
+                // a sibling-repo artifact.
+                return Err(if lead {
+                    MoveError::EvidenceMissingLead
+                } else {
+                    MoveError::EvidenceMissing
+                });
             }
             // The lead's own failure carries the stale-catalogue hint: a
             // session resumed from before `lead_verified` existed drops
@@ -6220,16 +6241,37 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let project_repo = dir.path().join("project");
-        repo_with_commit(&project_repo, "project work");
+        let project_head = repo_with_commit(&project_repo, "project work");
         ws.seed_test_project("proj", project_repo.to_str().expect("utf8 path"));
         ws.install_evidence_verifier(std::sync::Arc::new(crate::env::evidence::GitEvidence));
         let sibling_commit = repo_with_commit(&dir.path().join("sibling"), "sibling work");
+        // The premise the test rests on: the project's repository really
+        // does not hold the sibling's commit. An inherited GIT_DIR or an
+        // alternates file would make the mechanical check pass and let
+        // the mutant the test guards against walk through.
+        assert_ne!(project_head, sibling_commit, "the two repositories' heads differ");
+        let spec = format!("{sibling_commit}^{{commit}}");
+        let lookup = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&project_repo)
+            .args(["cat-file", "-e", &spec])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git runs");
+        assert!(!lookup.success(), "the project repo must not hold the sibling's commit");
+
         let quote = "read the sibling repo at this sha: the five port rows pass";
         ws.push_task(Task {
             evidence: Some(Evidence {
                 commit: Some(sibling_commit),
+                path: None,
                 lead_verified: Some(quote.to_owned()),
-                ..passing_evidence().expect("a sample claim")
+                excerpt: None,
+                verified_at: None,
+                // A prior refusal rides the block: the lead's word is
+                // what clears it.
+                problem: Some("commit deadbeef is not in the project repo".to_owned()),
             }),
             ..sample_task("t-1", "proj")
         });
@@ -6248,22 +6290,27 @@ mod tests {
         assert_eq!(done.status, TaskStatus::Completed);
         let evidence = done.evidence.expect("the claim rides the row");
         assert!(evidence.verified_at.is_some(), "the lead's check is stamped like any other");
-        assert_eq!(evidence.problem, None);
+        assert_eq!(evidence.problem, None, "the lead's word clears the last refusal");
         assert_eq!(evidence.lead_verified.as_deref(), Some(quote), "the quote stays on the block");
     }
 
     /// Vouching is the lead's own act: a worker stating `lead_verified` is
     /// refused, and so is another project's lead. The refusal names the
-    /// rule, and the row does not move.
+    /// rule, and the row does not move. The artifact named here EXISTS in
+    /// the project repo, so a guard that ran after the mechanical check
+    /// would let the worker's move land - the seat is consulted first.
     #[test]
     fn only_the_projects_lead_may_vouch_for_an_artifact() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project("proj", "/tmp/tp-vouch-seat");
+        let project_repo = dir.path().join("project");
+        let project_head = repo_with_commit(&project_repo, "project work");
+        ws.seed_test_project("proj", project_repo.to_str().expect("utf8 path"));
+        ws.install_evidence_verifier(std::sync::Arc::new(crate::env::evidence::GitEvidence));
         let quote = "read the sibling repo at this sha";
         ws.push_task(Task {
             evidence: Some(Evidence {
-                commit: None,
+                commit: Some(project_head),
                 path: None,
                 lead_verified: Some(quote.to_owned()),
                 ..passing_evidence().expect("a sample claim")
@@ -6409,8 +6456,9 @@ mod tests {
             "today's text is unchanged: {said}",
         );
         assert!(
-            said.contains("lead_verified") && said.contains("respawn the session"),
-            "the lead's refusal ends with the stale-catalogue hint: {said}",
+            said.contains("If you meant to state `lead_verified`")
+                && said.contains("respawn the session"),
+            "the lead's refusal ends with the conditional stale-catalogue hint: {said}",
         );
 
         let worker_refused = ws
@@ -6430,6 +6478,112 @@ mod tests {
         assert!(
             !worker_refused.to_string().contains("lead_verified"),
             "a worker's refusal does not carry the hint: {worker_refused}",
+        );
+    }
+
+    /// A quote-only claim whose field was dropped arrives as NO claim at
+    /// all. The lead's own refusal has to name `lead_verified` and the
+    /// respawn - "state the commit or the path" cannot work for a
+    /// sibling-repo artifact, which is the case this exists for.
+    #[test]
+    fn a_lead_whose_quote_was_dropped_is_told_about_the_field() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-vouch-dropped");
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                lead_verified: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("there is nothing to check");
+        assert_eq!(refused, MoveError::EvidenceMissingLead);
+        let said = refused.to_string();
+        assert!(
+            said.contains("`lead_verified`") && said.contains("respawn the session"),
+            "the lead hears the field and the respawn it needs: {said}",
+        );
+
+        let worker_refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::worker("TestOrg", "proj", "w-1")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("the same absence, from a worker");
+        assert_eq!(
+            worker_refused,
+            MoveError::EvidenceMissing,
+            "a worker's refusal keeps today's text",
+        );
+        assert!(
+            !worker_refused.to_string().contains("lead_verified"),
+            "and does not carry the lead's hint: {worker_refused}",
+        );
+    }
+
+    /// The lead's word stands for the artifact, never for the connector: a
+    /// project that opted into one still waits on its pull requests, so a
+    /// lead-vouched completion with an unchecked link is refused.
+    #[test]
+    fn a_lead_vouched_completion_still_waits_on_the_connector() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-vouch-connector",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(std::sync::Arc::new(crate::env::evidence::GitEvidence));
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link("https://example.invalid/pull/7"));
+        row.evidence = Some(Evidence {
+            commit: None,
+            path: None,
+            lead_verified: Some("read the sibling repo; the port rows pass".to_owned()),
+            excerpt: None,
+            verified_at: None,
+            problem: None,
+        });
+        ws.push_task(row);
+
+        let refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("the connector has not seen the pull request");
+        assert!(
+            matches!(&refused, MoveError::EvidenceUnverified(reason)
+                if reason.contains("connector") && reason.contains("pull/7")),
+            "the connector's half runs behind the lead's word: {refused}",
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Pending,
+            "the row did not move",
         );
     }
 
