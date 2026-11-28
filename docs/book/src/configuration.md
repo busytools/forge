@@ -856,9 +856,9 @@ always. What it asks, and on what clock, is a constant in the code:
   carries neither mark and draws no stall ask**; un-parking restores both
   from its age again.
 - **An open row past its estimate asks its owner once**, and a restated
-  estimate arms the nudge again; a wait that resolved asks its waiter
-  once to resume it.
-- **An open row whose re-plan ask has gone unanswered for 30 minutes
+  estimate (a different duration) arms the nudge again; a wait that
+  resolved asks its waiter once to resume it.
+- **An open row still past its estimate 30 minutes after its re-plan ask
   tells the lead once per estimate.** The escalation is authority:
   rescope, reassign, take over, or restate the expectation.
 - **A failed row, one whose owner is gone, an epic still owing its retro,

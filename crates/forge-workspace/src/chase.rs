@@ -8,10 +8,10 @@
 //! ask on the user is never chased, a resource wait is checked, a dependency
 //! chase goes to the blocker's owner).
 //!
-//! **One cadence, not three.** A finite overrun asks once and parks the
-//! row, and the lead hears the escalation once if the ask goes unanswered;
-//! every other held state repeats at `CHASE_CADENCE_SECS` until it
-//! clears. **The chase log is the whole slate**: every naming is deduped
+//! **One cadence, not three.** An open finite overrun asks once - parking
+//! an in-progress row - and the lead hears the escalation once per
+//! estimate; every other held state repeats at `CHASE_CADENCE_SECS` until
+//! it clears. **The chase log is the whole slate**: every naming is deduped
 //! by it, so a restart re-reads it rather than re-firing, and a state that
 //! clears has its naming forgotten - off the log, where a fresh process
 //! reads - so a recurrence is named at once, whatever happened in between.
@@ -174,9 +174,10 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 /// hears: an ask on the user is never chased, a resource wait is checked,
 /// and a dependency chase goes to the blocker's owner.
 ///
-/// A finite overrun asks once and parks the row (the sweep does the
-/// write); the lead hears once if the ask goes unanswered past the
-/// cadence, and then the chase stops for that estimate.
+/// An open finite overrun asks once, parking an in-progress row (the sweep
+/// does the write); the lead hears the escalation once per estimate if the
+/// ask goes unanswered past the cadence, and then the chase stops for that
+/// estimate.
 pub(crate) fn crossings(
     lead: &SessionSlot,
     rows: &[BoardRow],

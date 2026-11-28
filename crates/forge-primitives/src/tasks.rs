@@ -620,11 +620,11 @@ pub struct TaskTransition {
 #[serde(rename_all = "snake_case")]
 pub enum ChaseRung {
     /// An open finite row's worked time passed its estimate: the one
-    /// re-plan ask to its owner (which parks the row), then nothing until
-    /// an estimate is restated.
+    /// re-plan ask to its owner (which parks an in-progress row), then
+    /// nothing until an estimate is restated.
     EstimateNudge,
-    /// The re-plan ask went unanswered past the cadence while the row was
-    /// still open: the lead hears once per estimate.
+    /// An open row still past its estimate 30 minutes after its re-plan
+    /// ask: the lead hears once per estimate.
     Escalate,
     QueueStall,
     WaitStall,
