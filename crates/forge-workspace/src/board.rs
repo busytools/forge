@@ -43,8 +43,10 @@ pub struct Marks {
     pub ready: bool,
     /// Has a pull-request link not known to be merged.
     pub in_review: bool,
-    /// Does this row owe a re-plan? Its worked time is past its estimate,
-    /// or it has been waiting past the window.
+    /// Is the row past one of its own thresholds? Its worked time is past
+    /// its estimate, or it has been waiting past the window. The overrun
+    /// asks read the first half only while the row is in progress; the wait
+    /// rungs read the mark as a whole.
     pub overdue: bool,
     /// Is anyone actually on this? No touch past the band, or an owner
     /// with no session behind it.
@@ -221,6 +223,16 @@ fn worked_secs(mine: &[&TaskTransition], now: SystemTime) -> u64 {
         total += now.duration_since(since).map_or(0, |d| d.as_secs());
     }
     total
+}
+
+/// One row's worked time, from the transitions `history` holds for it.
+/// A writer that needs the figure without a whole board read (a task move
+/// asking whether a restated estimate still covers the work) reads it here.
+pub(crate) fn worked_secs_of(task: &Task, history: &[TaskTransition], now: SystemTime) -> u64 {
+    let mut mine: Vec<&TaskTransition> =
+        history.iter().filter(|step| step.task_id == task.id).collect();
+    mine.sort_by_key(|step| step.at);
+    worked_secs(&mine, now)
 }
 
 /// The tail of a row's transitions a board row carries: the newest
@@ -808,6 +820,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -836,6 +849,7 @@ mod tests {
             on: None,
             verification: false,
             parked,
+            replan: false,
             since: Some(epoch(0)),
             due: None,
             acknowledged_at: None,
@@ -990,6 +1004,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1087,6 +1102,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -1125,6 +1141,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1139,6 +1156,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1175,6 +1193,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1208,6 +1227,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1238,6 +1258,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1254,6 +1275,7 @@ mod tests {
             on: None,
             verification: true,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1269,6 +1291,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1287,6 +1310,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,

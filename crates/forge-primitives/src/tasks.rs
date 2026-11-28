@@ -99,6 +99,13 @@ pub struct Waiting {
     /// deferral - so the chase leaves it alone rather than nudging it.
     #[serde(default)]
     pub parked: bool,
+    /// The chase wrote this wait: a re-plan ask parked a row over its
+    /// estimate. The escalation follows its own ask here; an owner's park
+    /// is `parked` on this same wait, so the marker survives it, and a wait
+    /// raised by anyone else - the user's, a dependency, an owner's fresh
+    /// wait - is never escalated.
+    #[serde(default)]
+    pub replan: bool,
     /// When the wait began, stamped as it is raised. `None` on a row stored
     /// before the field existed, which reads back as its creation.
     #[serde(default)]
@@ -643,12 +650,14 @@ pub struct TaskTransition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChaseRung {
-    /// An open finite row's worked time passed its estimate: the one
-    /// re-plan ask to its owner (which parks an in-progress row), then
-    /// nothing until an estimate is restated.
+    /// An in-progress finite row's worked time passed its estimate: the one
+    /// re-plan ask to its owner (which parks the row), then nothing until
+    /// the row is back in progress with an estimate restated to a different
+    /// duration.
     EstimateNudge,
-    /// An open row still past its estimate 30 minutes after its re-plan
-    /// ask: the lead hears once per estimate.
+    /// A row still past its estimate 30 minutes after its re-plan ask,
+    /// while it is in progress or waiting in the chase's own overrun park:
+    /// the lead hears once per estimate.
     Escalate,
     QueueStall,
     WaitStall,
@@ -927,6 +936,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: false,
                 since: None,
                 acknowledged_at: None,
                 due: None,
@@ -954,6 +964,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             since,
             acknowledged_at: None,
             due: None,
@@ -1074,6 +1085,7 @@ mod tests {
             on: Some(TaskId::from("t-9")),
             verification: false,
             parked: false,
+            replan: false,
             since: None,
             acknowledged_at: None,
             due: None,
@@ -1095,6 +1107,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             since: None,
             acknowledged_at: None,
             due: None,
@@ -1104,6 +1117,26 @@ mod tests {
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
         assert_eq!(back.kind, None);
+    }
+
+    /// The replan marker is additive: a wait stored before it existed
+    /// decodes as a wait the chase did not write, never as its own park.
+    #[test]
+    fn a_wait_stored_before_the_replan_marker_is_not_the_chases() {
+        let json = serde_json::json!({
+            "kind": "resource",
+            "detail": null,
+            "on": null,
+            "verification": false,
+            "parked": false,
+            "since": null,
+            "due": null,
+            "acknowledged_at": null,
+            "snoozed": null,
+            "expired_at": null,
+        });
+        let back: Waiting = serde_json::from_value(json).expect("deserialize");
+        assert!(!back.replan, "an old wait is not a chase park");
     }
 
     #[test]

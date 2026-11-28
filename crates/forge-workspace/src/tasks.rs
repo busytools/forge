@@ -13,9 +13,9 @@ use std::time::{Duration, SystemTime};
 
 use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{
-    Answer, AnswerValue, AskKind, Attestation, By, Deadline, DefaultIfIgnored, Disposition,
-    Evidence, LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting,
-    WaitingKind,
+    Answer, AnswerValue, AskKind, Attestation, By, ChaseRung, Deadline, DefaultIfIgnored,
+    Disposition, Evidence, LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition,
+    Waiting, WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -853,6 +853,20 @@ impl Workspace {
             if prior == TaskStatus::Waiting && next.status != TaskStatus::Waiting {
                 next.waiting_on = None;
             }
+            // A chase park owes its wait detail to an overrun. A restated
+            // estimate that covers the worked time retires that overrun, so
+            // the drawn detail must stop claiming it.
+            let estimate_moved = next.estimate.as_ref().map(|estimate| estimate.secs)
+                != tasks[index].estimate.as_ref().map(|estimate| estimate.secs);
+            let overrun_retired = estimate_moved
+                && next.waiting_on.as_ref().is_some_and(|wait| wait.replan)
+                && next.estimate.as_ref().is_some_and(|estimate| {
+                    self.worked_secs_of(project_name, &next, at)
+                        .is_some_and(|worked| worked <= estimate.secs)
+                });
+            if overrun_retired && let Some(wait) = next.waiting_on.as_mut() {
+                wait.detail = None;
+            }
 
             if gate
                 && next.status == TaskStatus::Completed
@@ -874,6 +888,7 @@ impl Workspace {
                     on: None,
                     verification: true,
                     parked: false,
+                    replan: false,
                     // A look carries a deadline too, and its default
                     // escalates: a look is never approved by a timer.
                     due: Some(default_user_deadline(at)),
@@ -977,6 +992,10 @@ impl Workspace {
             self.record_transition(project_name, &task.id, Some(prior), task.status, by);
         }
         if task.status.is_terminal() {
+            // The row's end answers its estimate asks: the log entries go
+            // with it, so a reopen asks again rather than reading a stale
+            // ask as unanswered.
+            self.forget_estimate_chases(project_name, &task.id);
             self.resolve_wait_on(project_name, &task.id);
         }
         self.announce_tasks_changed(project_name);
@@ -1335,6 +1354,7 @@ impl Workspace {
                 on: None,
                 verification: true,
                 parked: false,
+                replan: false,
                 due: Some(default_user_deadline(at)),
                 acknowledged_at: None,
                 snoozed: None,
@@ -1437,6 +1457,9 @@ impl Workspace {
         })?;
         let (task, prior) = outcome;
         self.record_transition(project_name, &task.id, Some(prior), task.status, By::System);
+        // A deadline's cancel is a terminal move like any other: the row's
+        // estimate asks ended with it, so a reopen asks again.
+        self.forget_estimate_chases(project_name, &task.id);
         self.announce_tasks_changed(project_name);
         Some(task)
     }
@@ -2199,6 +2222,9 @@ impl Workspace {
                 on,
                 verification: false,
                 parked: false,
+                // The same wait restated keeps its start and its origin: a
+                // re-plan park the owner re-states is still the chase's.
+                replan: same.is_some_and(|wait| wait.replan),
                 // Every item carries a deadline: one the asker named, else
                 // the escalate default.
                 due: due.or_else(|| (kind == WaitingKind::User).then(|| default_user_deadline(at))),
@@ -2234,7 +2260,9 @@ impl Workspace {
 
     /// Park an overrun row waiting on its owner: the chase's re-plan ask is a
     /// state the board draws, not a message alone. A row already off
-    /// `in_progress` is left alone - the owner got there first.
+    /// `in_progress` is left alone - the owner got there first. The wait
+    /// carries `replan`, so the escalation follows its own ask rather than
+    /// treating this park as a stall.
     pub(crate) fn park_overrun(&self, project_name: &str, id: &TaskId) -> Option<Task> {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
@@ -2253,6 +2281,7 @@ impl Workspace {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: true,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -2266,6 +2295,16 @@ impl Workspace {
             Some(tasks[index].clone())
         });
         if outcome.is_some() {
+            // The park stops the clock: worked_secs is the sum of
+            // in_progress intervals, and a park with no transition would
+            // keep accruing for as long as the row waited.
+            self.record_transition(
+                project_name,
+                id,
+                Some(TaskStatus::InProgress),
+                TaskStatus::Waiting,
+                By::System,
+            );
             self.announce_tasks_changed(project_name);
         }
         outcome
@@ -2325,6 +2364,58 @@ impl Workspace {
             .map(|view| view.key);
         let Some(key) = key else { return false };
         self.list_live_workers(&key).iter().any(|entry| &entry.slot == slot)
+    }
+
+    /// Forget the estimate rungs recorded for a row: its end answered them,
+    /// so a reopen must not read a stale ask as unanswered.
+    fn forget_estimate_chases(&self, project_name: &str, id: &TaskId) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        let fired = match crate::store::task_chases::list_for_project(db, project_name) {
+            Ok(fired) => fired,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "chase_estimate_forget_read_failed",
+                    %project_name,
+                    task_id = %id.as_str(),
+                    %error,
+                    "reading the chase log to forget a closed row's asks failed",
+                );
+                return;
+            }
+        };
+        for chase in fired.iter().filter(|chase| {
+            chase.task_id.as_ref() == Some(id)
+                && matches!(chase.rung, ChaseRung::EstimateNudge | ChaseRung::Escalate)
+        }) {
+            if let Err(error) = crate::store::task_chases::forget(
+                db,
+                project_name,
+                chase.rung,
+                Some(id),
+                chase.subject.as_deref(),
+            ) {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "chase_estimate_forget_failed",
+                    %project_name,
+                    task_id = %id.as_str(),
+                    %error,
+                    "forgetting a closed row's estimate chase failed; a reopen may read a stale ask",
+                );
+            }
+        }
+    }
+
+    /// A row's worked time from the project's history, as the board reads
+    /// it. `None` when the store cannot be read, so a caller leaves the row
+    /// as it stands rather than acting on a number it does not have.
+    fn worked_secs_of(&self, project_name: &str, task: &Task, now: SystemTime) -> Option<u64> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        let history = crate::store::task_history::list_for_project(db, project_name).ok()?;
+        Some(crate::board::worked_secs_of(task, &history, now))
     }
 
     /// Append one status transition to the durable history.
@@ -3343,6 +3434,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -3438,6 +3530,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -3577,6 +3670,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: false,
                 since: Some(SystemTime::now()),
                 due: None,
                 acknowledged_at: None,
@@ -4853,6 +4947,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -4895,6 +4990,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -4972,6 +5068,7 @@ mod tests {
             on,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -5245,6 +5342,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -5520,6 +5618,7 @@ mod tests {
                 on: Some(TaskId::from("blocker")),
                 verification: false,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
