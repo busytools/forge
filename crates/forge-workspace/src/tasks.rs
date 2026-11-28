@@ -1303,6 +1303,9 @@ impl Workspace {
         })?;
         let (task, prior) = outcome;
         self.record_transition(project_name, &task.id, Some(prior), task.status, By::System);
+        // A deadline's cancel is a terminal move like any other: the row's
+        // estimate asks ended with it, so a reopen asks again.
+        self.forget_estimate_chases(project_name, &task.id);
         self.announce_tasks_changed(project_name);
         Some(task)
     }
@@ -2219,6 +2222,9 @@ impl Workspace {
             Err(error) => {
                 tracing::error!(
                     target: "forge_workspace::tasks",
+                    event_name = "chase_estimate_forget_read_failed",
+                    %project_name,
+                    task_id = %id.as_str(),
                     %error,
                     "reading the chase log to forget a closed row's asks failed",
                 );
@@ -2238,6 +2244,9 @@ impl Workspace {
             ) {
                 tracing::error!(
                     target: "forge_workspace::tasks",
+                    event_name = "chase_estimate_forget_failed",
+                    %project_name,
+                    task_id = %id.as_str(),
                     %error,
                     "forgetting a closed row's estimate chase failed; a reopen may read a stale ask",
                 );
