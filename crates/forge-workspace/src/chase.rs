@@ -8,15 +8,16 @@
 //! ask on the user is never chased, a resource wait is checked, a dependency
 //! chase goes to the blocker's owner).
 //!
-//! **One cadence, not three.** An open finite overrun asks once - parking
-//! an in-progress row - and the lead hears the escalation once per
-//! estimate; the stall, death, close, retro and unaccounted rungs repeat
-//! at `CHASE_CADENCE_SECS` while their state holds, and the movement and
-//! new-input namings fire once per touch or check. **The chase log is the
-//! whole slate**: every naming is deduped by it, so a restart re-reads it
-//! rather than re-firing, and a state that clears has its naming
-//! forgotten - off the log, where a fresh process reads - so a recurrence
-//! is named at once, whatever happened in between.
+//! **One cadence, not three.** An in-progress finite overrun asks once -
+//! parking the row - and the lead hears the escalation once per estimate.
+//! A waiting or pending row is not being worked, so its worked time past
+//! an estimate arms neither signal. The stall, death, close, retro and
+//! unaccounted rungs repeat at `CHASE_CADENCE_SECS` while their state
+//! holds, and the movement and new-input namings fire once per touch or
+//! check. **The chase log is the whole slate**: every naming is deduped by
+//! it, so a restart re-reads it rather than re-firing, and a state that
+//! clears has its naming forgotten - off the log, where a fresh process
+//! reads - so a recurrence is named at once, whatever happened in between.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
 //! owner the lead is; with every seat asleep the mark alone stands. A
@@ -177,10 +178,11 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 /// hears: an ask on the user is never chased, a resource wait is checked,
 /// and a dependency chase goes to the blocker's owner.
 ///
-/// An open finite overrun asks once, parking an in-progress row (the sweep
+/// An in-progress finite overrun asks once, parking the row (the sweep
 /// does the write); the lead hears the escalation once per estimate once
 /// the ask has had its cadence, and then the chase stops for that
-/// estimate.
+/// estimate. A waiting or pending row is not being worked, so its worked
+/// time past an estimate arms neither signal.
 pub(crate) fn crossings(
     lead: &SessionSlot,
     rows: &[BoardRow],
@@ -197,16 +199,21 @@ pub(crate) fn crossings(
         let id = &row.task.id;
         let estimate = row.task.estimate.as_ref().filter(|e| e.secs > 0);
         let running = row.task.status == TaskStatus::InProgress;
-        let open = !row.task.status.is_terminal();
+        // Worked time past the estimate. The overrun signals fire only on a
+        // running row - a waiting or pending row is not being worked, so its
+        // clock is history rather than an ongoing overrun - but the fact is
+        // read status-independent here: it also keeps the generic wait rung
+        // off a row the chase itself parked over its estimate.
         let over = row.task.kind == forge_primitives::tasks::TaskKind::Finite
             && estimate.is_some_and(|estimate| row.worked_secs > estimate.secs);
         let wait = row.task.waiting_on.as_ref();
         let parked = wait.is_some_and(|wait| wait.parked);
 
-        // Signal 1a: open finite work past its estimate owes a re-plan; a
-        // terminal row's numbers are history. The ask is one per estimate and
-        // parks an in-progress row; the sweep writes the park.
-        if open
+        // Signal 1a: in-progress finite work past its estimate owes a
+        // re-plan. A waiting, pending or terminal row is not being worked,
+        // so its numbers are history rather than an overrun. The ask is one
+        // per estimate and parks the row; the sweep writes the park.
+        if running
             && let Some(estimate) = estimate.filter(|_| over)
             && !fired_already(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
         {
@@ -225,10 +232,10 @@ pub(crate) fn crossings(
                 ),
             });
         }
-        // The escalation: once per estimate, only while the row is still
-        // open, and only once the ask has had its cadence. Then this
+        // The escalation: once per estimate, only while the row is being
+        // worked, and only once the ask has had its cadence. Then this
         // estimate is done being chased.
-        if open
+        if running
             && over
             && let Some(estimate) = estimate
             && !fired_already(fired, ChaseRung::Escalate, id, Some(&estimate.secs.to_string()))
@@ -1073,8 +1080,8 @@ mod tests {
         assert_eq!(sweep(&ws, &deliver, 5010), 1, "the new failure is named at once");
     }
 
-    /// The 1x overrun nudge is once per estimate: a restated estimate of a
-    /// different duration arms it again.
+    /// The overrun nudge is once per estimate: a row moved back in progress
+    /// with a restated estimate of a different duration arms it again.
     #[test]
     fn a_restated_estimate_arms_the_overrun_nudge_again() {
         let dir = tempdir().expect("tempdir");
@@ -1087,8 +1094,10 @@ mod tests {
         assert_eq!(says(&deliver, "has worked"), 1, "named once: {:?}", deliver.seen.lock());
         sweep(&ws, &deliver, 400);
         assert_eq!(says(&deliver, "has worked"), 1, "never twice for one estimate");
-        // The owner restates the estimate; the row is still over it.
+        // The owner moves it back in progress with a restated estimate; the
+        // row is still being worked and still over the new one.
         ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::InProgress;
             task.estimate = Some(Estimate { words: "1m".to_owned(), secs: 60 });
         })
         .expect("no refusal")
@@ -1105,7 +1114,7 @@ mod tests {
     }
 
     /// The escalation fires once per estimate, a cadence after the ask,
-    /// while the row stays open.
+    /// while the row is still being worked.
     #[test]
     fn the_escalation_fires_once_after_the_ask_waits_out_the_cadence() {
         let dir = tempdir().expect("tempdir");
@@ -1120,6 +1129,13 @@ mod tests {
         sweep(&ws, &deliver, 200);
         assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
         assert_eq!(says(&deliver, "the re-plan ask is unanswered"), 0, "not yet");
+        // The ask parked it, and the owner moves it back in progress without
+        // re-planning: the row is being worked and still over.
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::InProgress;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
         sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS);
         assert_eq!(
             says(&deliver, "the re-plan ask is unanswered"),
@@ -1177,8 +1193,9 @@ mod tests {
                 assert_eq!(deliver.seen.lock().len(), 0, "{status:?}: nothing is delivered");
             }
 
-            // The ask landed while the row was open and the row closed before
-            // the cadence ran out: the escalation reads the logged ask.
+            // The ask landed while the row was being worked and the row
+            // closed before the cadence ran out: the escalation reads the
+            // logged ask.
             ws.record_chase(&TaskChase {
                 task_id: Some(TaskId::from("t-1")),
                 subject: Some("10".to_owned()),
@@ -1605,8 +1622,10 @@ mod tests {
         );
     }
 
-    /// A waiting row is never estimate-chased: its clock is stopped, and
-    /// its wait's age is the signal - which has its own rung.
+    /// A waiting row is never estimate-chased: while it is not being worked
+    /// its clock is stopped, so worked time past its estimate is not an
+    /// ongoing overrun. The fixture really is over its estimate, so the
+    /// silence is the rung declining rather than the fact being absent.
     #[test]
     fn a_waiting_row_is_never_estimate_chased() {
         let dir = tempdir().expect("tempdir");
@@ -1624,21 +1643,79 @@ mod tests {
             acknowledged_at: None,
             snoozed: None,
             expired_at: None,
-            since: None,
+            since: Some(epoch(30)),
         });
-        row.updated_at = epoch(0);
+        row.updated_at = epoch(30);
         ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Waiting, 30);
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        assert!(
+            held.worked_secs > held.task.estimate.as_ref().expect("estimate").secs,
+            "the fixture worked past its estimate",
+        );
         let deliver = Recording::default();
 
-        sweep(&ws, &deliver, WINDOW + 1);
-        let seen = deliver.seen.lock();
-        assert!(
-            !seen.iter().any(|(_, text)| text.contains("estimate")),
-            "no estimate nudge for a waiting row: {seen:?}",
+        assert_eq!(
+            sweep(&ws, &deliver, WINDOW + 1),
+            0,
+            "a waiting row is not chased: {:?}",
+            deliver.seen.lock(),
         );
+        assert!(deliver.seen.lock().is_empty(), "and nothing is said");
         assert!(
-            seen.iter().any(|(_, text)| text.contains("resource")),
-            "the wait's own rung carries it: {seen:?}",
+            ws.chases_for_project(PROJECT).is_empty(),
+            "no rung is logged for it: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
+    /// The same for a wait parked by design: the park is the user's own
+    /// deferral, and a row that is not being worked has no ongoing overrun
+    /// to ask about.
+    #[test]
+    fn a_parked_waiting_row_is_never_estimate_chased() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.estimate = Some(Estimate { words: "10s".to_owned(), secs: 10 });
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("backlog at Ved's word".to_owned()),
+            on: None,
+            verification: false,
+            parked: true,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
+            since: Some(epoch(30)),
+        });
+        row.updated_at = epoch(30);
+        ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Waiting, 30);
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        assert!(
+            held.worked_secs > held.task.estimate.as_ref().expect("estimate").secs,
+            "the fixture worked past its estimate",
+        );
+        let deliver = Recording::default();
+
+        assert_eq!(
+            sweep(&ws, &deliver, WINDOW + 1),
+            0,
+            "a parked waiting row is not chased: {:?}",
+            deliver.seen.lock(),
+        );
+        assert!(deliver.seen.lock().is_empty(), "and nothing is said");
+        assert!(
+            ws.chases_for_project(PROJECT).is_empty(),
+            "no rung is logged for it: {:?}",
+            ws.chases_for_project(PROJECT),
         );
     }
 

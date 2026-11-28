@@ -855,12 +855,14 @@ always. What it asks, and on what clock, is a constant in the code:
   this is the fallback for rows that have none. **A wait parked by design
   carries neither mark and draws no stall ask**; un-parking restores both
   from its age again.
-- **An open row past its estimate asks its owner once**, and a restated
-  estimate (a different duration) arms the nudge again; a wait that
-  resolved asks its waiter once to resume it.
-- **An open row still past its estimate 30 minutes after its re-plan ask
-  tells the lead once per estimate.** The escalation is authority:
-  rescope, reassign, take over, or restate the expectation.
+- **An in-progress row past its estimate asks its owner once** and is
+  parked waiting on the owner; a restated estimate (a different duration)
+  arms the nudge again; a wait that resolved asks its waiter once to
+  resume it. A waiting or pending row is not being worked, so its worked
+  time past an estimate draws no overrun ask.
+- **An in-progress row still past its estimate 30 minutes after its
+  re-plan ask tells the lead once per estimate.** The escalation is
+  authority: rescope, reassign, take over, or restate the expectation.
 - **A failed row, one whose owner is gone, an epic still owing its retro,
   and one ready to close each tell the lead every 30 minutes** while the
   state holds.
