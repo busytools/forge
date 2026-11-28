@@ -66,9 +66,7 @@ export function agedRow(row: BoardRow, nowSecs: number, readAtMs: number): Board
           estimate !== null &&
           estimate.secs > 0 &&
           worked > estimate.secs) ||
-        (row.task.status === 'waiting' &&
-          !parked &&
-          (row.wait_secs ?? updatedAgo) > STALE_SECS),
+        (row.task.status === 'waiting' && !parked && (row.wait_secs ?? updatedAgo) > STALE_SECS),
       stale: !parked && (updatedAgo > STALE_SECS || !row.owner_live),
     },
   };
