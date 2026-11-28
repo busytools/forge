@@ -81,8 +81,9 @@ export interface HomeRead {
    * **A malformed read is its own state, not an empty home**: the store is
    * already `ready` and its bound cleared before the page narrows it, so a
    * healthy-empty drawing would stand forever with nothing saying why. The
-   * page draws this instead. Nothing periodic retries it: the next update
-   * that covers the home, entering the page, or a reconnect, reads again.
+   * page draws this instead. Nothing periodic retries it: a reconnect reads
+   * again, and entering the page does not (a route entry asks no home read,
+   * #2955).
    */
   failed: string | null;
   /**
