@@ -1044,17 +1044,21 @@ mod tests {
         );
     }
 
-    /// A project row's id, as both the record and the patch entry state it.
+    /// A project row, as the record carries it: the identity pair plus the
+    /// fields the entry is not keyed on, so an id that took the whole row
+    /// would not match the patch's bare pair.
     fn project(org: &str, name: &str) -> Value {
-        json!({ "project": { "org": org, "name": name } })
+        json!({ "project": { "org": org, "name": name }, "sessions": [] })
     }
 
     /// **The home's lists cross as id-addressed entries, and the held
     /// roster folds them where they stand.** A top-level merge would replace
     /// the roster with the patch's own entries, so the copy the ask rule
-    /// reads would hold `{op, id, record}` objects where rows belong. Every
-    /// list keeps a survivor, so a fold that removes and re-appends is told
-    /// apart from one that replaces in place.
+    /// reads would hold `{op, id, record}` objects where rows belong.
+    /// **Each list keeps a row no entry names, sitting after a moved one**,
+    /// so a fold that rebuilds the list from the patch's records - the
+    /// failure that drops a project whose waits the rule then cannot raise -
+    /// is told apart from one that merges into the list it holds.
     #[test]
     fn a_home_patch_folds_its_lists_by_id() {
         let slot = |label: &str| json!({ "org": "Busytools", "project": "forge", "label": label });
@@ -1065,17 +1069,20 @@ mod tests {
                 "boot_id": "run-1",
                 "projects": [
                     project("Busytools", "forge"),
+                    project("Busytools", "alpha"),
                     project("Busytools", "other"),
                 ],
                 "agents": [
                     { "slot": slot("w1"), "pending": null, "pending_seq": 0 },
+                    { "slot": slot("a1"), "pending": null, "pending_seq": 0 },
                     { "slot": slot("w2"), "pending": null, "pending_seq": 0 },
                 ],
                 "fleet": [
                     { "project": "forge", "attention": [] },
+                    { "project": "alpha", "attention": [] },
                     { "project": "other", "attention": [] },
                 ],
-                "unseen": [],
+                "unseen": [slot("w9")],
             }),
         );
         let applied = records.patch(
@@ -1123,7 +1130,7 @@ mod tests {
         let seen = home(&records);
 
         let projects = seen["projects"].as_array().expect("projects");
-        assert_eq!(projects.len(), 2, "one replaced, one removed, one appended");
+        assert_eq!(projects.len(), 3, "one replaced, one removed, one appended");
         assert_eq!(
             projects[0]["project"]["name"],
             json!("forge"),
@@ -1132,27 +1139,47 @@ mod tests {
         assert_eq!(projects[0]["chip"], json!("busy"), "and takes the record's fields");
         assert_eq!(
             projects[1]["project"]["name"],
+            json!("alpha"),
+            "the project no entry named stays at its index"
+        );
+        assert_eq!(projects[1]["sessions"], json!([]), "and keeps its own fields");
+        assert_eq!(
+            projects[2]["project"]["name"],
             json!("third"),
             "an identity the roster did not hold appends"
         );
 
         let agents = seen["agents"].as_array().expect("agents");
-        assert_eq!(agents.len(), 2, "one replaced, one removed, one appended");
+        assert_eq!(agents.len(), 3, "one replaced, one removed, one appended");
         assert_eq!(agents[0]["slot"]["label"], json!("w1"), "the set entry keeps its place");
         assert_eq!(agents[0]["pending"], json!("question"), "and takes the record's fields");
         assert_eq!(
             agents[1]["slot"]["label"],
+            json!("a1"),
+            "the seat no entry named stays at its index"
+        );
+        assert_eq!(
+            agents[2]["slot"]["label"],
             json!("w3"),
             "an id the roster did not hold appends"
         );
 
         let fleet = seen["fleet"].as_array().expect("fleet");
-        assert_eq!(fleet.len(), 1, "the removed project's row is gone");
+        assert_eq!(fleet.len(), 2, "the removed project's row is gone");
         assert_eq!(fleet[0]["project"], json!("forge"), "and the set one keeps its place");
         assert_eq!(fleet[0]["attention"][0]["task"], json!("t1"), "with the record's fields");
+        assert_eq!(
+            fleet[1]["project"],
+            json!("alpha"),
+            "the project no entry named stays at its index"
+        );
 
         assert_eq!(seen["boot_id"], json!("run-2"), "a whole field is replaced");
-        assert_eq!(seen["unseen"], json!([]), "and one the patch did not name is left alone");
+        assert_eq!(
+            seen["unseen"],
+            json!([slot("w9")]),
+            "and one the patch did not name keeps its value"
+        );
     }
 
     /// **A patch is folded whole or not at all.** A valid entry ahead of an

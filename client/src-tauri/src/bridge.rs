@@ -1741,9 +1741,12 @@ impl Bridge {
                     // keep.** The page's own fold answers the same shape with
                     // one whole read (`wire/patch.ts`), and the held roster is
                     // the copy a parked page's raise reads, so it is asked for
-                    // again here too. **Once per gap**: the mark comes off with
-                    // the read's answer, so a burst of unreadable patches buys
-                    // one whole encode rather than one each.
+                    // again here too. **Once per gap from this half**: the mark
+                    // comes off with the read's answer, so a burst of
+                    // unreadable patches buys one whole encode rather than one
+                    // each. That promise is the parked page's, which asks for
+                    // none of its own; a page that is drawing asks its socket
+                    // for its own gap read beside this one.
                     let mut state = self.lock();
                     if state.held.contains_key("home") && state.refreshing.insert("home".to_owned())
                     {
@@ -3453,8 +3456,7 @@ mod tests {
             vec![(SessionSlot::lead("Busytools", "forge"), crate::asks::AskKind::Permission)],
             "the patch the shell forwarded moved the held roster, and the ask is raised",
         );
-        // Rule 25: the page still sees the frame itself, and the branch that
-        // raised sits between the fold and the forward.
+        // Rule 25: the page still sees the frame itself.
         let ClientEvent::Inbound(seen) = event(&mut rx, is_inbound_kind("patch")).await else {
             unreachable!("filtered to a patch");
         };
@@ -3480,9 +3482,9 @@ mod tests {
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
 
-        let unreadable = home_patch(&json!({ "agents": [{ "op": "weird", "id": slot() }] }));
-        sent(&bridge, unreadable.clone());
-        sent(&bridge, unreadable);
+        let unreadable = || home_patch(&json!({ "agents": [{ "op": "weird", "id": slot() }] }));
+        sent(&bridge, unreadable());
+        sent(&bridge, unreadable());
         let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], json!("home"), "the patch that could not be folded is re-read");
@@ -3490,6 +3492,14 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
             "the second unreadable patch waited for the read it already had",
         );
+
+        // **The answer takes the mark off.** A gap after it is a fresh read,
+        // which is what proves the coalescing cannot strand its mark.
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        sent(&bridge, unreadable());
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let third = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(third["what"], json!("home"), "the gap after the answer is read anew");
     }
 
     /// **A screen holding no home reads nothing.** The connect screen has no
@@ -3502,6 +3512,10 @@ mod tests {
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
+        // **The control**: this bridge does put frames on the wire, so the
+        // silence below is the home guard's and not a dead connection.
+        bridge.subscribe(seat(), false, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
 
         sent(&bridge, home_patch(&json!({ "agents": [{ "op": "weird", "id": slot() }] })));
         assert!(

@@ -11204,13 +11204,15 @@ mod tests {
         let _ = driven.await;
     }
 
-    /// The permission request a fixture's ask is about.
+    /// The permission request the seeded ask is about: the prompt a fixture
+    /// parks carries `test-tool`, so the update names the same call rather
+    /// than a fictional one.
     fn permission_request() -> forge_primitives::PermissionRequest {
         forge_primitives::PermissionRequest {
             tool_call: forge_primitives::ToolCall {
-                tool_call_id: "tu-1".to_owned(),
-                title: "write a file".to_owned(),
-                kind: forge_primitives::ToolKind::Edit,
+                tool_call_id: "test-tool".to_owned(),
+                title: "Bash".to_owned(),
+                kind: forge_primitives::ToolKind::Execute,
                 status: forge_primitives::ToolCallStatus::InProgress,
                 content: Vec::new(),
                 raw_input: None,
@@ -11272,15 +11274,23 @@ mod tests {
     /// keep the server green and silently kill the notification.
     #[tokio::test]
     async fn a_permission_request_crosses_the_home_as_an_agents_patch() {
-        let fleet =
-            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let fleet = crate::testing::Fleet::new(&[("TestOrg", &["proj", "proj-two"])])
+            .expect("the fleet builds");
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let Driven { to_server, written, driven, .. } = connection(&state);
+        // **A second seat is on the base**, so "only the moved one crosses"
+        // is a claim the fixture can fail: this lead holds no ask and is
+        // registered before the first read.
+        fleet.workspace().seed_test_prompt_queue(
+            &SessionSlot::lead("TestOrg", "proj-two"),
+            forge_workspace::PendingInteractionKind::Permission,
+            0,
+        );
         subscribed_home(&to_server, &written).await;
 
         // The parking is the seat's own state, and the update is what marks
-        // the home; the fleet's lead row appears with it because the seat now
-        // holds an ask.
+        // the home; the lead's row appears with it because the seat now holds
+        // an ask.
         let seat = lead();
         fleet.workspace().seed_test_prompt_queue(
             &seat,
@@ -11289,7 +11299,7 @@ mod tests {
         );
         fleet.emit(SessionUpdate::PermissionRequest {
             key: seat.clone(),
-            tool_id: "tu-1".to_owned(),
+            tool_id: "test-tool".to_owned(),
             request: permission_request(),
         });
 
@@ -11300,11 +11310,22 @@ mod tests {
         let agents = patches[0].1["agents"].as_array().expect("the agents' entries");
         assert_eq!(agents.len(), 1, "only the moved seat crosses");
         assert_eq!(agents[0]["op"], "set");
-        assert_eq!(agents[0]["id"]["label"], "lead", "the seat's slot is the entry's id");
+        assert_eq!(agents[0]["id"]["project"], "proj", "the seat's slot is the entry's id");
+        assert_eq!(agents[0]["id"]["label"], "lead");
         assert_eq!(agents[0]["record"]["pending"], json!("permission"));
         assert_eq!(agents[0]["record"]["pending_depth"], json!(1));
         assert_eq!(agents[0]["record"]["pending_seq"], json!(1));
-        assert_eq!(home_snapshots(&written), 1, "no whole home record followed the patch");
+        // The barrier is the ordering proof: a whole read written before it
+        // would be on the wire ahead of its answer. Its own record also says
+        // the fixture held both seats, so the entry count above is a claim
+        // that could have failed.
+        let barrier = subscribed_home_again(&to_server, &written).await;
+        assert_eq!(
+            barrier["agents"].as_array().map(Vec::len),
+            Some(2),
+            "precondition: both seats were on the roster",
+        );
+        assert_eq!(home_snapshots(&written), 2, "no whole home record followed the patch");
 
         drop(to_server);
         let _ = driven.await;
@@ -11316,12 +11337,14 @@ mod tests {
     /// the guarantee the ask patch pins.
     #[tokio::test]
     async fn a_tasks_changed_crosses_the_home_as_a_fleet_patch_carrying_the_wait() {
-        let fleet =
-            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let fleet = crate::testing::Fleet::new(&[("TestOrg", &["proj", "proj-two"])])
+            .expect("the fleet builds");
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let Driven { to_server, written, driven, .. } = connection(&state);
         subscribed_home(&to_server, &written).await;
 
+        // One project's row moves and the other's does not, so the entry
+        // count is a claim the fixture can fail.
         fleet.seed_task(waited_task("proj", "t-wait", "sign this off"));
         fleet.emit(SessionUpdate::TasksChanged { key: lead(), tasks: Vec::new() });
 
@@ -11339,7 +11362,16 @@ mod tests {
         assert_eq!(attention[0]["task"], "t-wait");
         assert_eq!(attention[0]["owner"], "w1");
         assert_eq!(attention[0]["words"], "sign this off");
-        assert_eq!(home_snapshots(&written), 1, "no whole home record followed the patch");
+        // The barrier's own record is the fixture's proof: both projects
+        // were on the roster, so the one-entry patch above is a claim that
+        // could have failed.
+        let barrier = subscribed_home_again(&to_server, &written).await;
+        assert_eq!(
+            barrier["fleet"].as_array().map(Vec::len),
+            Some(2),
+            "precondition: both projects were on the roster",
+        );
+        assert_eq!(home_snapshots(&written), 2, "no whole home record followed the patch");
 
         drop(to_server);
         let _ = driven.await;
