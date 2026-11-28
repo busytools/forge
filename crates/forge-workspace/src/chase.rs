@@ -8,15 +8,20 @@
 //! ask on the user is never chased, a resource wait is checked, a dependency
 //! chase goes to the blocker's owner).
 //!
-//! **One cadence, not three.** An open finite overrun asks once - parking
-//! an in-progress row - and the lead hears the escalation once per
-//! estimate; the stall, death, close, retro and unaccounted rungs repeat
-//! at `CHASE_CADENCE_SECS` while their state holds, and the movement and
-//! new-input namings fire once per touch or check. **The chase log is the
-//! whole slate**: every naming is deduped by it, so a restart re-reads it
-//! rather than re-firing, and a state that clears has its naming
-//! forgotten - off the log, where a fresh process reads - so a recurrence
-//! is named at once, whatever happened in between.
+//! **One cadence, not three.** An in-progress finite overrun asks once -
+//! parking the row - and the lead hears the escalation once per estimate,
+//! following the ask to the row still being worked and to the one still
+//! sitting in the park the ask wrote. The nudge arms only while the row is
+//! being worked; the escalation, while it is being worked or still in that
+//! park. Any other waiting or pending row arms neither overrun signal, and
+//! its wait's own rung is what applies - except to the chase's park, where
+//! the escalation follows its ask. The stall, death, close, retro and
+//! unaccounted rungs repeat at `CHASE_CADENCE_SECS` while their state
+//! holds, and the movement and new-input namings fire once per touch or
+//! check. **The chase log is the whole slate**: every naming is deduped by
+//! it, so a restart re-reads it rather than re-firing, and a state that
+//! clears has its naming forgotten - off the log, where a fresh process
+//! reads - so a recurrence is named at once, whatever happened in between.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
 //! owner the lead is; with every seat asleep the mark alone stands. A
@@ -27,7 +32,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use forge_primitives::tasks::{
-    By, ChaseRung, TaskChase, TaskId, TaskStatus, TaskTransition, WaitingKind,
+    By, ChaseRung, Task, TaskChase, TaskId, TaskStatus, TaskTransition, WaitingKind,
 };
 use tracing::Instrument;
 
@@ -167,6 +172,20 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
     crate::board::fmt_secs(secs)
 }
 
+/// Whether an overrun row is one the escalation can name: it is being
+/// worked, or still sitting in the chase's own park, and it is open.
+/// `over` is its worked time past the estimate. The park is the chase's
+/// only when its marker stands and the owner has not parked it themselves.
+fn escalation_armed(task: &Task, over: bool) -> bool {
+    if task.status.is_terminal() || !over {
+        return false;
+    }
+    let wait = task.waiting_on.as_ref();
+    let parked = wait.is_some_and(|wait| wait.parked);
+    let chase_park = wait.is_some_and(|wait| wait.replan) && !parked;
+    task.status == TaskStatus::InProgress || chase_park
+}
+
 /// The crossings one project's board implies, given what already fired.
 ///
 /// **Four signals, together rather than blindly.** A row's KIND decides
@@ -177,10 +196,12 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 /// hears: an ask on the user is never chased, a resource wait is checked,
 /// and a dependency chase goes to the blocker's owner.
 ///
-/// An open finite overrun asks once, parking an in-progress row (the sweep
+/// An in-progress finite overrun asks once, parking the row (the sweep
 /// does the write); the lead hears the escalation once per estimate once
-/// the ask has had its cadence, and then the chase stops for that
-/// estimate.
+/// the ask has had its cadence, whether the row is still being worked or
+/// still sits in the park the ask wrote, and then the chase stops for that
+/// estimate. The nudge never fires on a waiting or pending row, and no
+/// wait the chase did not write is ever escalated.
 pub(crate) fn crossings(
     lead: &SessionSlot,
     rows: &[BoardRow],
@@ -197,16 +218,24 @@ pub(crate) fn crossings(
         let id = &row.task.id;
         let estimate = row.task.estimate.as_ref().filter(|e| e.secs > 0);
         let running = row.task.status == TaskStatus::InProgress;
-        let open = !row.task.status.is_terminal();
+        // Worked time past the estimate. The nudge fires only on a running
+        // row - a waiting or pending row is not being worked, so its clock
+        // is history rather than an ongoing overrun - but the fact is read
+        // status-independent here: the escalation follows its ask into the
+        // park the chase wrote, which is a waiting row.
         let over = row.task.kind == forge_primitives::tasks::TaskKind::Finite
             && estimate.is_some_and(|estimate| row.worked_secs > estimate.secs);
         let wait = row.task.waiting_on.as_ref();
         let parked = wait.is_some_and(|wait| wait.parked);
+        // The chase's own park, where the escalation follows its ask - and
+        // only while the owner has not parked that wait itself.
+        let chase_park = wait.is_some_and(|wait| wait.replan) && !parked;
 
-        // Signal 1a: open finite work past its estimate owes a re-plan; a
-        // terminal row's numbers are history. The ask is one per estimate and
-        // parks an in-progress row; the sweep writes the park.
-        if open
+        // Signal 1a: in-progress finite work past its estimate owes a
+        // re-plan. A waiting, pending or terminal row is not being worked,
+        // so its numbers are history rather than an overrun. The ask is one
+        // per estimate and parks the row; the sweep writes the park.
+        if running
             && let Some(estimate) = estimate.filter(|_| over)
             && !fired_already(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
         {
@@ -225,11 +254,14 @@ pub(crate) fn crossings(
                 ),
             });
         }
-        // The escalation: once per estimate, only while the row is still
-        // open, and only once the ask has had its cadence. Then this
-        // estimate is done being chased.
-        if open
-            && over
+        // The escalation: once per estimate, once the ask has had its
+        // cadence. It follows the ask to a row still being worked and to one
+        // still sitting in the park the ask wrote; a wait raised by anyone
+        // else - the user's, a dependency, an owner's park - is never
+        // escalated. An estimate restated upward while the row sits in that
+        // park is the re-plan the ask wanted: `over` goes false and the
+        // escalation stops. Then this estimate is done being chased.
+        if escalation_armed(&row.task, over)
             && let Some(estimate) = estimate
             && !fired_already(fired, ChaseRung::Escalate, id, Some(&estimate.secs.to_string()))
             && let Some(asked) =
@@ -328,9 +360,18 @@ pub(crate) fn crossings(
             });
         }
         // Signal 4, resource: a wait on something outside the board is
-        // checked at the cadence.
+        // checked at the cadence. The chase's own park is exempt while its
+        // ask still names the current estimate (the escalation follows that
+        // ask) and while the restate has covered the worked time (the row is
+        // no longer over). A park left over by a restate has no ask to
+        // escalate, so the stall is the rung that surfaces it.
+        let asked_this_estimate = estimate.is_some_and(|estimate| {
+            last_fired(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
+                .is_some()
+        });
+        let park_is_quiet = chase_park && (!over || asked_this_estimate);
         if row.marks.overdue
-            && !over
+            && !park_is_quiet
             && wait.and_then(|wait| wait.kind) == Some(WaitingKind::Resource)
             && !parked
             && due(fired, ChaseRung::WaitStall, id, None, CHASE_CADENCE_SECS, now)
@@ -603,6 +644,82 @@ impl Workspace {
         }
     }
 
+    /// Deliver one crossing, after writing the state its ask names.
+    ///
+    /// The crossings came from a board read, and the row may have moved
+    /// since: the estimate nudge is a park before it is a message, and the
+    /// escalation is true only while its row still holds the ask. A
+    /// crossing whose state no longer holds is neither sent nor recorded,
+    /// so an ask never names a park the board does not show and a stale
+    /// escalation cannot age a new one. Returns whether a seat was reached.
+    fn deliver_crossing(
+        &self,
+        deliver: &dyn Deliver,
+        lead: &SessionSlot,
+        project: &str,
+        crossing: &Crossing,
+        now: SystemTime,
+    ) -> bool {
+        match crossing.rung {
+            ChaseRung::EstimateNudge => {
+                let parked = crossing
+                    .task_id
+                    .as_ref()
+                    .is_some_and(|id| self.park_overrun(project, id).is_some());
+                if !parked {
+                    return false;
+                }
+            }
+            ChaseRung::Escalate => {
+                let holds = crossing.task_id.as_ref().is_some_and(|id| {
+                    self.escalation_still_holds(project, id, crossing.subject.as_deref(), now)
+                });
+                if !holds {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        let target = ladder(crossing, lead, |seat| self.seat_is_live(seat));
+        let delivered = target
+            .as_ref()
+            .is_some_and(|target| deliver.to_seat(target, &crossing.text) == Delivery::Delivered);
+        self.record_chase(&TaskChase {
+            task_id: crossing.task_id.clone(),
+            subject: crossing.subject.clone(),
+            project_name: project.to_owned(),
+            rung: crossing.rung,
+            at: now,
+        });
+        delivered
+    }
+
+    /// Whether the row still holds what an escalation crossing names: it is
+    /// being worked, or still waiting in the chase's own park, its worked
+    /// time still passes the estimate, and that is the estimate the
+    /// crossing's subject names. The crossing came from a board read, so
+    /// the row may have moved since.
+    fn escalation_still_holds(
+        &self,
+        project: &str,
+        id: &TaskId,
+        subject: Option<&str>,
+        now: SystemTime,
+    ) -> bool {
+        let Some(subject) = subject else { return false };
+        let rows = self.board_rows(project, now, crate::board::DEFAULT_STALE_SECS);
+        let Some(row) = rows.iter().find(|row| row.task.id == *id) else { return false };
+        let Some(estimate) = row.task.estimate.as_ref().filter(|estimate| estimate.secs > 0) else {
+            return false;
+        };
+        if estimate.secs.to_string() != subject {
+            return false;
+        }
+        let over = row.task.kind == forge_primitives::tasks::TaskKind::Finite
+            && row.worked_secs > estimate.secs;
+        escalation_armed(&row.task, over)
+    }
+
     /// Forget one worker's naming: its slate cleared, so the record goes
     /// with the state and the next drift is named at once.
     fn forget_drift(&self, project: &str, label: &str) {
@@ -653,28 +770,9 @@ impl Workspace {
             }
             let crossings = crossings(&lead, &rows, &history, &unaccounted, &fired, now);
             for crossing in crossings {
-                // The re-plan ask is a state, not a message alone: an
-                // in-progress row is parked waiting on its owner before the
-                // owner hears, so the board shows the same thing the message
-                // says.
-                if crossing.rung == ChaseRung::EstimateNudge
-                    && let Some(id) = &crossing.task_id
-                {
-                    self.park_overrun(&project, id);
-                }
-                let target = ladder(&crossing, &lead, |seat| self.seat_is_live(seat));
-                if let Some(target) = &target
-                    && deliver.to_seat(target, &crossing.text) == Delivery::Delivered
-                {
+                if self.deliver_crossing(deliver, &lead, &project, &crossing, now) {
                     delivered += 1;
                 }
-                self.record_chase(&TaskChase {
-                    task_id: crossing.task_id.clone(),
-                    subject: crossing.subject.clone(),
-                    project_name: project.clone(),
-                    rung: crossing.rung,
-                    at: now,
-                });
             }
         }
         delivered
@@ -916,6 +1014,17 @@ mod tests {
         deliver.seen.lock().iter().filter(|(_, text)| text.contains(needle)).count()
     }
 
+    /// The fixture is over its estimate at `now`, so a rung that declines
+    /// is declining on its own condition rather than on a missing fact.
+    fn assert_over_at(ws: &Workspace, id: &str, now: u64) {
+        let rows = ws.board_rows(PROJECT, epoch(now), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from(id)).expect("row");
+        assert!(
+            held.worked_secs > held.task.estimate.as_ref().expect("estimate").secs,
+            "{id}: the fixture is over its estimate at {now}",
+        );
+    }
+
     /// The unaccounted rung is per project: one project's pass never
     /// makes another's namings fresh again. Regression for the sweep
     /// that re-fired every worker of every project on every pass.
@@ -1073,8 +1182,8 @@ mod tests {
         assert_eq!(sweep(&ws, &deliver, 5010), 1, "the new failure is named at once");
     }
 
-    /// The 1x overrun nudge is once per estimate: a restated estimate of a
-    /// different duration arms it again.
+    /// The overrun nudge is once per estimate: a row moved back in progress
+    /// with a restated estimate of a different duration arms it again.
     #[test]
     fn a_restated_estimate_arms_the_overrun_nudge_again() {
         let dir = tempdir().expect("tempdir");
@@ -1087,8 +1196,10 @@ mod tests {
         assert_eq!(says(&deliver, "has worked"), 1, "named once: {:?}", deliver.seen.lock());
         sweep(&ws, &deliver, 400);
         assert_eq!(says(&deliver, "has worked"), 1, "never twice for one estimate");
-        // The owner restates the estimate; the row is still over it.
+        // The owner moves it back in progress with a restated estimate; the
+        // row is still being worked and still over the new one.
         ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::InProgress;
             task.estimate = Some(Estimate { words: "1m".to_owned(), secs: 60 });
         })
         .expect("no refusal")
@@ -1105,7 +1216,7 @@ mod tests {
     }
 
     /// The escalation fires once per estimate, a cadence after the ask,
-    /// while the row stays open.
+    /// while the row is still being worked.
     #[test]
     fn the_escalation_fires_once_after_the_ask_waits_out_the_cadence() {
         let dir = tempdir().expect("tempdir");
@@ -1120,6 +1231,33 @@ mod tests {
         sweep(&ws, &deliver, 200);
         assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
         assert_eq!(says(&deliver, "the re-plan ask is unanswered"), 0, "not yet");
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .any(|chase| chase.rung == ChaseRung::EstimateNudge),
+            "the ask is logged, not only delivered: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+        // The ask parked it, and the owner moves it back in progress without
+        // re-planning: the row is being worked and still over.
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::InProgress;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        // One second inside the cadence is still too soon.
+        sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS - 1);
+        assert_eq!(
+            says(&deliver, "the re-plan ask is unanswered"),
+            0,
+            "inside the cadence: {:?}",
+            deliver.seen.lock(),
+        );
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::Escalate),
+            "no escalation is logged inside the cadence: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
         sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS);
         assert_eq!(
             says(&deliver, "the re-plan ask is unanswered"),
@@ -1132,6 +1270,396 @@ mod tests {
             says(&deliver, "the re-plan ask is unanswered"),
             1,
             "and the chase stops after that, however long the overrun holds",
+        );
+    }
+
+    /// The chase's own park is not an answer: the nudge parks an overrun row
+    /// waiting on its owner, and if nobody picks it up the lead hears the
+    /// escalation at the cadence, once per estimate. The park is not chased
+    /// as a resource stall - the chase does not chase its own park.
+    #[test]
+    fn an_unanswered_auto_park_escalates_to_the_lead_once() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, 200), 1, "the owner is asked");
+        let held = ws
+            .tasks_for_project(PROJECT)
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("the row is there");
+        assert_eq!(held.status, TaskStatus::Waiting, "the ask parked it");
+        let wait = held.waiting_on.as_ref().expect("a wait holds");
+        assert!(wait.replan, "the park is the chase's own");
+        assert!(!wait.parked, "not the owner's deferral");
+        assert_eq!(says(&deliver, "the re-plan ask is unanswered"), 0, "not yet");
+        // The park closed the row's in-progress interval, so the row is
+        // still over when the escalation's cadence comes due.
+        assert_over_at(&ws, "t-1", 200 + CHASE_CADENCE_SECS);
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .any(|chase| chase.rung == ChaseRung::EstimateNudge),
+            "the ask is logged, not only delivered: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+
+        // Inside the cadence the ask is still fresh: nothing escalates.
+        assert_eq!(sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS - 1), 0, "not yet");
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::Escalate),
+            "no escalation is logged inside the cadence: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+        assert_eq!(
+            sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS),
+            1,
+            "the ask went unanswered: the lead hears once",
+        );
+        let seen = deliver.seen.lock();
+        assert!(
+            seen.iter().any(|(seat, text)| seat == &SessionSlot::lead("TestOrg", PROJECT)
+                && text.contains("the re-plan ask is unanswered")),
+            "the escalation reaches the lead: {seen:?}",
+        );
+        assert!(
+            !seen.iter().any(|(_, text)| text.contains("has waited")),
+            "the chase does not chase its own park as a resource stall: {seen:?}",
+        );
+        drop(seen);
+        assert_eq!(
+            sweep(&ws, &deliver, 200 + 4 * CHASE_CADENCE_SECS),
+            0,
+            "once per estimate, however long the park holds",
+        );
+    }
+
+    /// A restate that leaves a chase park still over has no ask to
+    /// escalate: the resource rung surfaces it at its cadence, once.
+    #[test]
+    fn a_restated_chase_park_still_over_surfaces_on_the_resource_rung() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let deliver = Recording::default();
+
+        sweep(&ws, &deliver, 200);
+        assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
+        // The owner restates the estimate below the frozen worked time and
+        // leaves the row in the park: still over, but the ask names the old
+        // estimate, so neither the nudge nor the escalation can fire.
+        let now = 200 + WINDOW + 1;
+        let rows = ws.board_rows(PROJECT, epoch(now), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        let restated = held.worked_secs - 1;
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.estimate = Some(Estimate { words: "most of it".to_owned(), secs: restated });
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        assert_over_at(&ws, "t-1", now);
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .any(|chase| chase.rung == ChaseRung::EstimateNudge),
+            "the old ask is logged",
+        );
+
+        assert_eq!(
+            sweep(&ws, &deliver, now),
+            1,
+            "the stall surfaces the stranded park: {:?}",
+            deliver.seen.lock(),
+        );
+        let seen = deliver.seen.lock();
+        assert!(
+            seen.iter().any(|(seat, text)| seat == &SessionSlot::lead("TestOrg", PROJECT)
+                && text.contains("on a resource")),
+            "the resource rung reaches the lead: {seen:?}",
+        );
+        drop(seen);
+        assert_eq!(
+            says(&deliver, "the re-plan ask is unanswered"),
+            0,
+            "the old ask cannot escalate the new estimate",
+        );
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::Escalate),
+            "no escalation is logged: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+        // Inside the stall's cadence it does not repeat.
+        assert_eq!(sweep(&ws, &deliver, now + CHASE_CADENCE_SECS - 1), 0, "once per cadence");
+    }
+
+    /// A chase park the restate has covered is quiet: the wait's age alone
+    /// must not draw the stall the marker exists to prevent.
+    #[test]
+    fn a_chase_park_that_is_no_longer_over_draws_no_stall() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.estimate = Some(Estimate { words: "1m".to_owned(), secs: 60 });
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some(
+                "over its estimate: re-plan it - rescope, split, or close it with the reason"
+                    .to_owned(),
+            ),
+            on: None,
+            verification: false,
+            parked: false,
+            replan: true,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
+            since: Some(epoch(0)),
+        });
+        row.updated_at = epoch(30);
+        ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Waiting, 30);
+        // Worked 20s against a 60s estimate: not over, but the wait is past
+        // the window, so only the marker keeps the stall away.
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        assert!(held.marks.overdue, "the wait is past the window");
+        assert!(
+            held.worked_secs <= held.task.estimate.as_ref().expect("estimate").secs,
+            "the estimate covers the work",
+        );
+        let deliver = Recording::default();
+
+        assert_eq!(
+            sweep(&ws, &deliver, WINDOW + 1),
+            0,
+            "the marker keeps it quiet: {:?}",
+            deliver.seen.lock(),
+        );
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::WaitStall),
+            "no stall is logged: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
+    /// A restate that covers the worked time clears the chase park's
+    /// overrun detail: the board must not keep claiming an overrun the new
+    /// estimate retired.
+    #[test]
+    fn a_restate_that_covers_the_work_clears_the_parks_overrun_detail() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let deliver = Recording::default();
+
+        sweep(&ws, &deliver, 200);
+        let held = ws
+            .tasks_for_project(PROJECT)
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("the row is there");
+        let wait = held.waiting_on.as_ref().expect("a wait holds");
+        assert!(
+            wait.detail.as_deref().is_some_and(|detail| detail.contains("over its estimate")),
+            "the park starts with the overrun detail: {:?}",
+            wait.detail,
+        );
+        let now = 200 + WINDOW + 1;
+        let rows = ws.board_rows(PROJECT, epoch(now), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        let worked = held.worked_secs;
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.estimate =
+                Some(Estimate { words: "the rest of the day".to_owned(), secs: worked + 1 });
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        let held = ws
+            .tasks_for_project(PROJECT)
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("the row is there");
+        let wait = held.waiting_on.as_ref().expect("a wait holds");
+        assert!(wait.replan, "the park stands");
+        assert_eq!(wait.detail, None, "the retired overrun is no longer drawn");
+    }
+
+    /// The escalation follows only the ask the chase wrote: a wait the user
+    /// owns is never escalated, however far past its estimate the row's
+    /// worked time is and however old the logged ask is. The ask is the real
+    /// nudge, so the log carries the subject the production chase armed.
+    #[test]
+    fn a_user_parked_wait_never_escalates() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let deliver = Recording::default();
+
+        // The real ask lands and parks the row.
+        sweep(&ws, &deliver, 200);
+        assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
+        // The owner converts the wait to the user's own backlog.
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.waiting_on = Some(Waiting {
+                kind: Some(WaitingKind::User),
+                detail: Some("backlog at Ved's word".to_owned()),
+                on: None,
+                verification: false,
+                parked: true,
+                replan: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
+                since: Some(epoch(200)),
+            });
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        assert_over_at(&ws, "t-1", 200 + CHASE_CADENCE_SECS);
+        let before = deliver.seen.lock().len();
+
+        sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS);
+        assert_eq!(
+            says(&deliver, "the re-plan ask is unanswered"),
+            0,
+            "a user wait is never escalated: {:?}",
+            deliver.seen.lock(),
+        );
+        assert_eq!(deliver.seen.lock().len(), before, "the owner's wait is left alone");
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::Escalate),
+            "no escalation is logged for a wait that is not the chase's: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
+    /// A dependency wait is never escalated off an overrun ask either: the
+    /// blocker's owner hears the wait's own rung instead, and that positive
+    /// control keeps the silence from being a missing chase.
+    #[test]
+    fn a_dependency_wait_never_escalates() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-waiter", Some("w-1"));
+        let deliver = Recording::default();
+
+        // The real ask lands and parks the row.
+        sweep(&ws, &deliver, 200);
+        assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
+        // The owner converts the wait to a dependency on another row, kept
+        // fresh so the blocker's own stuck rung stays out of the count.
+        let blocker_slot = SessionSlot::worker("TestOrg", PROJECT, "w-blocker");
+        let _blocker_rx = ws.install_testing_stub(&blocker_slot);
+        let mut blocker = task("t-blocker", TaskStatus::InProgress);
+        blocker.owner = Some(blocker_slot.clone());
+        blocker.updated_at = epoch(200 + CHASE_CADENCE_SECS - 60);
+        ws.seed_test_task(blocker);
+        ws.update_task(PROJECT, &TaskId::from("t-waiter"), By::System, |task| {
+            task.waiting_on = Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: None,
+                on: Some(TaskId::from("t-blocker")),
+                verification: false,
+                parked: false,
+                replan: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
+                since: Some(epoch(200)),
+            });
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        assert_over_at(&ws, "t-waiter", 200 + CHASE_CADENCE_SECS);
+        let before = deliver.seen.lock().len();
+
+        assert_eq!(
+            sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS),
+            1,
+            "the blocker hears the wait's own rung: {:?}",
+            deliver.seen.lock(),
+        );
+        let seen = deliver.seen.lock();
+        assert_eq!(seen.len(), before + 1, "exactly one more message");
+        let (seat, text) = seen.last().expect("the message");
+        assert_eq!(seat, &blocker_slot, "the blocker's owner hears it");
+        assert!(text.contains("on your row"), "the wait rung names the blocker: {text}");
+        drop(seen);
+        assert_eq!(says(&deliver, "the re-plan ask is unanswered"), 0, "and no escalation is said");
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::Escalate),
+            "no escalation is logged for a dependency wait: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
+    /// An owner can park the chase's own park as their deferral. The marker
+    /// survives, and the owner's park silences the escalation and the stall.
+    #[test]
+    fn an_owner_parked_chase_park_never_escalates() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let deliver = Recording::default();
+
+        // The real ask lands and parks the row.
+        sweep(&ws, &deliver, 200);
+        assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
+        // The owner parks the chase's own wait as their deferral.
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            if let Some(wait) = task.waiting_on.as_mut() {
+                wait.parked = true;
+            }
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        let held = ws
+            .tasks_for_project(PROJECT)
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("the row is there");
+        let wait = held.waiting_on.as_ref().expect("a wait holds");
+        assert!(wait.replan, "the marker survives the owner's park");
+        assert!(wait.parked, "the owner's park holds");
+        assert_over_at(&ws, "t-1", 200 + CHASE_CADENCE_SECS);
+        let before = deliver.seen.lock().len();
+
+        assert_eq!(
+            sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS),
+            0,
+            "the owner's park is left alone: {:?}",
+            deliver.seen.lock(),
+        );
+        assert_eq!(deliver.seen.lock().len(), before, "nothing more is said");
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::Escalate),
+            "no escalation is logged for an owner-parked park: {:?}",
+            ws.chases_for_project(PROJECT),
         );
     }
 
@@ -1177,8 +1705,9 @@ mod tests {
                 assert_eq!(deliver.seen.lock().len(), 0, "{status:?}: nothing is delivered");
             }
 
-            // The ask landed while the row was open and the row closed before
-            // the cadence ran out: the escalation reads the logged ask.
+            // The ask landed while the row was being worked and the row
+            // closed before the cadence ran out: the escalation reads the
+            // logged ask.
             ws.record_chase(&TaskChase {
                 task_id: Some(TaskId::from("t-1")),
                 subject: Some("10".to_owned()),
@@ -1211,6 +1740,182 @@ mod tests {
         }
     }
 
+    /// The park refuses a row the owner already moved off `in_progress`:
+    /// the board read and the park write are separate, so this guard keeps
+    /// the chase from stamping its marker onto a wait it did not write.
+    #[test]
+    fn park_overrun_leaves_a_row_that_is_not_in_progress_alone() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::User),
+            detail: Some("backlog at Ved's word".to_owned()),
+            on: None,
+            verification: false,
+            parked: true,
+            replan: false,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
+            since: Some(epoch(30)),
+        });
+        row.updated_at = epoch(30);
+        ws.seed_test_task(row);
+
+        assert!(
+            ws.park_overrun(PROJECT, &TaskId::from("t-1")).is_none(),
+            "a row off in_progress is left alone",
+        );
+        let held = ws
+            .tasks_for_project(PROJECT)
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("the row is there");
+        assert_eq!(held.status, TaskStatus::Waiting, "the owner's state stands");
+        let wait = held.waiting_on.as_ref().expect("a wait holds");
+        assert_eq!(wait.kind, Some(WaitingKind::User), "the owner's wait kind stands");
+        assert!(wait.parked, "the owner's park stands");
+        assert!(!wait.replan, "and it is not marked as the chase's");
+        assert!(
+            ws.history_for_project(PROJECT).is_empty(),
+            "a refused park writes no history: {:?}",
+            ws.history_for_project(PROJECT),
+        );
+    }
+
+    /// An in-progress row is parked, and the wait says the chase wrote it.
+    #[test]
+    fn park_overrun_parks_an_in_progress_row() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        running_over_estimate(&ws, "t-1", None);
+
+        let parked = ws.park_overrun(PROJECT, &TaskId::from("t-1")).expect("the row is parked");
+        assert_eq!(parked.status, TaskStatus::Waiting, "the park moved it");
+        let wait = parked.waiting_on.as_ref().expect("a wait holds");
+        assert_eq!(wait.kind, Some(WaitingKind::Resource), "the owner must act");
+        assert!(wait.replan, "the chase wrote it");
+        assert!(!wait.parked, "not the owner's deferral");
+        let history = ws.history_for_project(PROJECT);
+        let recorded = history
+            .iter()
+            .find(|transition| {
+                transition.task_id == TaskId::from("t-1") && transition.to == TaskStatus::Waiting
+            })
+            .expect("the park is in the history");
+        assert_eq!(recorded.from, Some(TaskStatus::InProgress), "it closes the worked interval");
+        assert_eq!(recorded.by, By::System, "the core wrote the park");
+        let stored = {
+            let guard = ws.db.lock();
+            crate::store::tasks::list(guard.as_ref().expect("db")).expect("the store reads")
+        };
+        let stored = stored
+            .iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("the parked row is persisted");
+        assert_eq!(stored.status, TaskStatus::Waiting, "the store holds the park");
+        assert!(stored.waiting_on.as_ref().expect("a wait holds").replan, "and its marker");
+    }
+
+    /// The nudge is a park before it is a message: when the row moved off
+    /// `in_progress` between the board read and the write, the crossing is
+    /// neither sent nor recorded, so no ask names a park the board lacks.
+    #[test]
+    fn a_nudge_crossing_is_dropped_when_the_row_is_no_longer_in_progress() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.owner = Some(owner.clone());
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::User),
+            detail: Some("backlog at Ved's word".to_owned()),
+            on: None,
+            verification: false,
+            parked: true,
+            replan: false,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
+            since: Some(epoch(30)),
+        });
+        row.updated_at = epoch(30);
+        ws.seed_test_task(row);
+        let crossing = Crossing {
+            rung: ChaseRung::EstimateNudge,
+            task_id: Some(TaskId::from("t-1")),
+            subject: Some("10".to_owned()),
+            seat: Some(owner),
+            text: "task board: \"subject t-1\" has worked 20s against an estimate of 10s."
+                .to_owned(),
+        };
+        let deliver = Recording::default();
+
+        assert!(
+            !ws.deliver_crossing(
+                &deliver,
+                &SessionSlot::lead("TestOrg", PROJECT),
+                PROJECT,
+                &crossing,
+                epoch(200),
+            ),
+            "the dropped ask is not a delivery",
+        );
+        assert!(deliver.seen.lock().is_empty(), "nothing is said");
+        assert!(
+            ws.chases_for_project(PROJECT).is_empty(),
+            "and nothing is logged: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
+    /// The escalation is only true while its row still holds the ask: a row
+    /// that ended between the board read and the write is not escalated.
+    #[test]
+    fn an_escalation_crossing_is_dropped_when_the_row_no_longer_holds_it() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Canceled);
+        row.estimate = Some(Estimate { words: "10s".to_owned(), secs: 10 });
+        row.updated_at = epoch(100);
+        ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Canceled, 100);
+        let crossing = Crossing {
+            rung: ChaseRung::Escalate,
+            task_id: Some(TaskId::from("t-1")),
+            subject: Some("10".to_owned()),
+            seat: Some(SessionSlot::lead("TestOrg", PROJECT)),
+            text: "task board: \"subject t-1\" passed its estimate of 10s and the re-plan ask \
+                   is unanswered."
+                .to_owned(),
+        };
+        let deliver = Recording::default();
+
+        assert!(
+            !ws.deliver_crossing(
+                &deliver,
+                &SessionSlot::lead("TestOrg", PROJECT),
+                PROJECT,
+                &crossing,
+                epoch(1_000),
+            ),
+            "the stale escalation is not a delivery",
+        );
+        assert!(deliver.seen.lock().is_empty(), "nothing is said");
+        assert!(
+            ws.chases_for_project(PROJECT).is_empty(),
+            "and nothing is logged: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
     /// A row parked on the user - a decision wait, or the look's own
     /// verification park - untouched since `updated`. A verification park
     /// belongs to a row carrying its own gate (#2423).
@@ -1225,6 +1930,7 @@ mod tests {
             on: None,
             verification,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1249,6 +1955,7 @@ mod tests {
             on: None,
             verification: false,
             parked: true,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1285,6 +1992,7 @@ mod tests {
             on: None,
             verification: false,
             parked: true,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1581,6 +2289,7 @@ mod tests {
             on: Some(TaskId::from("t-blocker")),
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -1605,8 +2314,11 @@ mod tests {
         );
     }
 
-    /// A waiting row is never estimate-chased: its clock is stopped, and
-    /// its wait's age is the signal - which has its own rung.
+    /// A waiting row is never estimate-chased: while it is not being worked
+    /// its clock is stopped, so worked time past its estimate is not an
+    /// ongoing overrun. Its real wait is still checked - the wait's own rung
+    /// carries it - and the fixture really is over its estimate, so the
+    /// estimate signals decline on the state rather than on a missing fact.
     #[test]
     fn a_waiting_row_is_never_estimate_chased() {
         let dir = tempdir().expect("tempdir");
@@ -1620,25 +2332,128 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
             expired_at: None,
-            since: None,
+            since: Some(epoch(30)),
         });
-        row.updated_at = epoch(0);
+        row.updated_at = epoch(30);
         ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Waiting, 30);
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        assert!(
+            held.worked_secs > held.task.estimate.as_ref().expect("estimate").secs,
+            "the fixture worked past its estimate",
+        );
+        // The gate is the state: with `running` deleted at the nudge, the
+        // park would refuse this row at delivery and the sweep would still
+        // be silent. Read the crossings the state itself yields.
+        let lead = SessionSlot::lead("TestOrg", PROJECT);
+        let reached = crossings(&lead, &rows, &[], &[], &[], epoch(WINDOW + 1));
+        assert!(
+            reached.iter().all(|crossing| crossing.rung != ChaseRung::EstimateNudge
+                && crossing.rung != ChaseRung::Escalate),
+            "neither estimate crossing is reached: {reached:?}",
+        );
+        assert_eq!(
+            reached.iter().filter(|crossing| crossing.rung == ChaseRung::WaitStall).count(),
+            1,
+            "the wait's own crossing carries it: {reached:?}",
+        );
         let deliver = Recording::default();
 
-        sweep(&ws, &deliver, WINDOW + 1);
+        assert_eq!(
+            sweep(&ws, &deliver, WINDOW + 1),
+            1,
+            "the wait's own rung carries it: {:?}",
+            deliver.seen.lock(),
+        );
         let seen = deliver.seen.lock();
         assert!(
-            !seen.iter().any(|(_, text)| text.contains("estimate")),
-            "no estimate nudge for a waiting row: {seen:?}",
+            seen.iter().any(|(seat, text)| seat == &SessionSlot::lead("TestOrg", PROJECT)
+                && text.contains("on a resource")),
+            "the genuine resource wait is checked with the lead: {seen:?}",
         );
+        assert_eq!(
+            seen.iter().filter(|(_, text)| text.contains("has worked")).count(),
+            0,
+            "no estimate nudge: {seen:?}",
+        );
+        assert_eq!(
+            seen.iter().filter(|(_, text)| text.contains("the re-plan ask is unanswered")).count(),
+            0,
+            "no escalation: {seen:?}",
+        );
+        drop(seen);
         assert!(
-            seen.iter().any(|(_, text)| text.contains("resource")),
-            "the wait's own rung carries it: {seen:?}",
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .all(|chase| chase.rung != ChaseRung::EstimateNudge
+                    && chase.rung != ChaseRung::Escalate),
+            "neither estimate rung is logged: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
+    /// The same for a wait parked by design: the park is the user's own
+    /// deferral, and a row that is not being worked has no ongoing overrun
+    /// to ask about.
+    #[test]
+    fn a_parked_waiting_row_is_never_estimate_chased() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.estimate = Some(Estimate { words: "10s".to_owned(), secs: 10 });
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("backlog at Ved's word".to_owned()),
+            on: None,
+            verification: false,
+            parked: true,
+            replan: false,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
+            since: Some(epoch(30)),
+        });
+        row.updated_at = epoch(30);
+        ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Waiting, 30);
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        assert!(
+            held.worked_secs > held.task.estimate.as_ref().expect("estimate").secs,
+            "the fixture worked past its estimate",
+        );
+        // No ask is ever logged for this row, so an assertion on the log
+        // could pass with the escalation armed. The crossing is the fact.
+        let lead = SessionSlot::lead("TestOrg", PROJECT);
+        let reached = crossings(&lead, &rows, &[], &[], &[], epoch(WINDOW + 1));
+        assert!(
+            reached.iter().all(|crossing| crossing.rung != ChaseRung::EstimateNudge
+                && crossing.rung != ChaseRung::Escalate),
+            "a parked wait reaches neither estimate crossing: {reached:?}",
+        );
+        let deliver = Recording::default();
+
+        assert_eq!(
+            sweep(&ws, &deliver, WINDOW + 1),
+            0,
+            "a parked waiting row is not chased: {:?}",
+            deliver.seen.lock(),
+        );
+        assert!(deliver.seen.lock().is_empty(), "and nothing is said");
+        assert!(
+            ws.chases_for_project(PROJECT).is_empty(),
+            "no rung is logged for it: {:?}",
+            ws.chases_for_project(PROJECT),
         );
     }
 
@@ -1815,6 +2630,261 @@ mod tests {
         assert!(
             !drawn.iter().any(|update| matches!(update, SessionUpdate::ChatAppended { .. })),
             "the board's words enter the chat at `sent`, never at dispatch: {drawn:?}",
+        );
+    }
+
+    /// A wait the owner re-states identically keeps the chase's marker and
+    /// its start; a different wait is a new wait and clears the marker.
+    #[test]
+    fn a_restated_identical_wait_keeps_the_chase_marker() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let parked = ws.park_overrun(PROJECT, &TaskId::from("t-1")).expect("the row is parked");
+        let wait = parked.waiting_on.clone().expect("a wait holds");
+        assert!(wait.replan);
+
+        let restated = ws
+            .wait_task(
+                PROJECT,
+                &TaskId::from("t-1"),
+                &owner,
+                WaitingKind::Resource,
+                wait.detail,
+                None,
+            )
+            .expect("the owner may restate its wait");
+        let restated_wait = restated.waiting_on.as_ref().expect("a wait holds");
+        assert!(restated_wait.replan, "the same wait is still the chase's");
+        assert_eq!(restated_wait.since, wait.since, "and it keeps its start");
+
+        let changed = ws
+            .wait_task(
+                PROJECT,
+                &TaskId::from("t-1"),
+                &owner,
+                WaitingKind::Resource,
+                Some("a CI run".to_owned()),
+                None,
+            )
+            .expect("the owner may change its wait");
+        let changed_wait = changed.waiting_on.as_ref().expect("a wait holds");
+        assert!(!changed_wait.replan, "a different wait is not the chase's");
+
+        // A plain wait re-stated identically is still not the chase's: the
+        // marker is minted by the park, never by a restate.
+        let mut plain = task("t-plain", TaskStatus::Waiting);
+        plain.owner = Some(owner.clone());
+        plain.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("a CI run".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            replan: false,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
+            since: Some(epoch(30)),
+        });
+        plain.updated_at = epoch(30);
+        ws.seed_test_task(plain);
+        let restated_plain = ws
+            .wait_task(
+                PROJECT,
+                &TaskId::from("t-plain"),
+                &owner,
+                WaitingKind::Resource,
+                Some("a CI run".to_owned()),
+                None,
+            )
+            .expect("the owner may restate a plain wait");
+        let plain_wait = restated_plain.waiting_on.as_ref().expect("a wait holds");
+        assert!(!plain_wait.replan, "a plain restate does not mint the marker");
+    }
+
+    /// A closed row's estimate ask is answered by its end: the logged rungs
+    /// go with it, so a reopen with the same estimate asks again rather
+    /// than reading a stale ask as unanswered.
+    #[test]
+    fn a_reopened_row_asks_again_for_the_same_estimate() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let deliver = Recording::default();
+
+        sweep(&ws, &deliver, 200);
+        assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
+        // Both estimate rungs stand in the log: a forget narrowed to the
+        // nudge would leave the escalation behind for the reopen to age.
+        let subject = ws
+            .chases_for_project(PROJECT)
+            .into_iter()
+            .find(|chase| chase.rung == ChaseRung::EstimateNudge)
+            .and_then(|chase| chase.subject)
+            .expect("the ask is logged");
+        ws.record_chase(&TaskChase {
+            task_id: Some(TaskId::from("t-1")),
+            subject: Some(subject),
+            project_name: PROJECT.to_owned(),
+            rung: ChaseRung::Escalate,
+            at: epoch(300),
+        });
+        // The row is canceled with both rungs standing.
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Canceled;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .all(|chase| chase.rung != ChaseRung::EstimateNudge
+                    && chase.rung != ChaseRung::Escalate),
+            "the end answered the ask: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+
+        // Reopened with the same estimate and still over it: a fresh ask.
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::InProgress;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        assert_over_at(&ws, "t-1", 1_000);
+        sweep(&ws, &deliver, 1_000);
+        assert_eq!(
+            says(&deliver, "has worked"),
+            2,
+            "the reopened row is asked again: {:?}",
+            deliver.seen.lock(),
+        );
+    }
+
+    /// A pending row is not being worked either: its worked time past an
+    /// estimate arms no rung, and an assigned row keeps the queue rung out.
+    #[test]
+    fn a_pending_row_over_its_estimate_is_never_chased() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Pending);
+        row.estimate = Some(Estimate { words: "10s".to_owned(), secs: 10 });
+        row.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
+        row.updated_at = epoch(30);
+        ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Pending, 30);
+        assert_over_at(&ws, "t-1", WINDOW + 1);
+        // The gate is the state, not the park's refusal: the sweep below
+        // would also be silent if a nudge crossing were dropped at delivery.
+        let lead = SessionSlot::lead("TestOrg", PROJECT);
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        let reached = crossings(&lead, &rows, &[], &[], &[], epoch(WINDOW + 1));
+        assert!(reached.is_empty(), "a pending row yields no crossing at all: {reached:?}");
+        let deliver = Recording::default();
+
+        assert_eq!(
+            sweep(&ws, &deliver, WINDOW + 1),
+            0,
+            "a pending row is not chased: {:?}",
+            deliver.seen.lock(),
+        );
+        assert!(deliver.seen.lock().is_empty(), "nothing is said");
+        assert!(
+            ws.chases_for_project(PROJECT).is_empty(),
+            "no rung is logged for it: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
+    /// An estimate restated upward while the row sits in the chase's park is
+    /// the re-plan the ask wanted: the escalation stops, and the park's
+    /// marker still keeps it out of the resource rung.
+    #[test]
+    fn an_upward_restated_estimate_ends_the_escalation() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let deliver = Recording::default();
+
+        sweep(&ws, &deliver, 200);
+        assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
+        // The owner's re-plan raises the estimate above the worked time the
+        // park froze, and leaves the row in the park.
+        let now = 200 + WINDOW + 1;
+        let rows = ws.board_rows(PROJECT, epoch(now), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        let worked = held.worked_secs;
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.estimate =
+                Some(Estimate { words: "the rest of the day".to_owned(), secs: worked + 1 });
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        let rows = ws.board_rows(PROJECT, epoch(now), WINDOW);
+        let held = rows.iter().find(|held| held.task.id == TaskId::from("t-1")).expect("row");
+        assert!(
+            held.worked_secs <= held.task.estimate.as_ref().expect("estimate").secs,
+            "the restated estimate covers the frozen work",
+        );
+        let before = deliver.seen.lock().len();
+        let logged = ws.chases_for_project(PROJECT).len();
+
+        assert_eq!(
+            sweep(&ws, &deliver, now),
+            0,
+            "the re-plan stopped the escalation: {:?}",
+            deliver.seen.lock(),
+        );
+        assert_eq!(deliver.seen.lock().len(), before, "nothing more is said");
+        assert_eq!(ws.chases_for_project(PROJECT).len(), logged, "and no rung is logged");
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::Escalate),
+            "no escalation survives the re-plan: {:?}",
+            ws.chases_for_project(PROJECT),
+        );
+    }
+
+    /// A deadline's cancel is a terminal move like any other: the row's
+    /// estimate rungs go with it, so a reopen asks again.
+    #[test]
+    fn an_expired_ask_forgets_its_estimate_rungs() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
+        let deliver = Recording::default();
+        sweep(&ws, &deliver, 200);
+        assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .any(|chase| chase.rung == ChaseRung::EstimateNudge),
+            "the ask is logged",
+        );
+
+        let expired =
+            ws.expire_ask(PROJECT, &TaskId::from("t-1"), epoch(400), "the deadline passed");
+        assert!(expired.is_some(), "the row is canceled by the deadline");
+        assert_eq!(expired.expect("the row").status, TaskStatus::Canceled, "the deadline ended it");
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .all(|chase| chase.rung != ChaseRung::EstimateNudge
+                    && chase.rung != ChaseRung::Escalate),
+            "the expiration answered the ask: {:?}",
+            ws.chases_for_project(PROJECT),
         );
     }
 

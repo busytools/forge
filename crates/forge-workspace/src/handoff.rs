@@ -2497,6 +2497,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
