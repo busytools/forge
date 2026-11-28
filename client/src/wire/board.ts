@@ -49,6 +49,8 @@ export interface BoardDeltaWire {
   landed_items?: DeltaItemWire[];
   expired_items?: DeltaItemWire[];
   merged_items?: DeltaItemWire[];
+  /** Why the archive half of the counts is missing; absent when it is whole. */
+  refused?: string | null;
 }
 
 /**

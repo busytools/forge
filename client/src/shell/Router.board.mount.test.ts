@@ -34,13 +34,21 @@ const LEAD = { org: 'TestOrg', project: 'proj', label: 'lead' };
  * A connection whose `dispatch` records, whose board read is already
  * answered, and whose every other call refuses.
  */
-function recording(sent: Record<string, unknown>[], board: BoardWire): { connection: Connection } {
+function recording(
+  sent: Record<string, unknown>[],
+  board: BoardWire | null,
+): {
+  connection: Connection;
+  stores: Stores;
+  deliver: (message: ServerMessage) => void;
+} {
   const refuse = (): never => {
     throw new Error('this render reached a part of the connection it should not have');
   };
   const stores = new Stores();
   const listeners = new Set<(message: ServerMessage) => void>();
-  stores.open('board').set(board);
+  const opened = stores.open('board');
+  if (board !== null) opened.set(board);
   const connection = {
     subscribe: (what: Subject) => stores.open(what),
     unsubscribe: (what: Subject) => stores.close(what),
@@ -68,7 +76,13 @@ function recording(sent: Record<string, unknown>[], board: BoardWire): { connect
     status: refuse,
     close: refuse,
   } as unknown as Connection;
-  return { connection };
+  return {
+    connection,
+    stores,
+    deliver: (message: ServerMessage) => {
+      for (const fn of listeners) fn(message);
+    },
+  };
 }
 
 /** The fixture's board, with one row waiting on the reader's look. */
@@ -177,6 +191,39 @@ describe('a board edit through the router', () => {
     expect(document.body.textContent).toContain('needs you');
     expect(document.body.textContent).toContain('a look');
     expect(document.body.textContent).toContain(LEAD.label);
+  });
+
+  it('stamps the last look for a deep link whose board read lands after mount', async () => {
+    // **The bug's own case**: a home -> board move and every deep link mount
+    // before the board read, and the old setup-time flag read that as "never
+    // drew", so the stamp never went. The read below lands after the mount.
+    const sent: Record<string, unknown>[] = [];
+    const { connection, stores, deliver } = recording(sent, null);
+    app = mount(Router, {
+      target: document.body,
+      props: {
+        route: { name: 'board', org: 'TestOrg', project: 'proj' },
+        settings: DEFAULT_SETTINGS,
+        address: '127.0.0.1:8790',
+        home: { wire: homeWire, refused: null, failed: null, report: null },
+        failure: null,
+        connected: true,
+        connection,
+        notice: null,
+        onconnect: () => {},
+      },
+    });
+    flushSync();
+    expect(document.querySelector('.b-top'), 'the page mounted before its read').not.toBeNull();
+    stores.open('board').set(boardWithWaiting());
+    deliver({ kind: 'snapshot', subject: 'board', data: boardWithWaiting() });
+    flushSync();
+    expect(document.body.textContent, 'the late read drew').toContain('needs you');
+    await unmount(app);
+    app = null;
+    expect(sent.at(-1), 'the read landed, so the leave stamps').toEqual({
+      board_seen: { project: 'proj' },
+    });
   });
 
   /**

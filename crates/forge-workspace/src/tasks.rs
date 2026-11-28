@@ -139,6 +139,9 @@ pub(crate) enum MoveError {
     /// recorded: a success that leaves the lesson on nothing is not one.
     /// The class rides it.
     PolicyWriteFailed(String),
+    /// The archive could not be read, so the row it was asked about is
+    /// unknown rather than absent. The read's own error rides it.
+    ArchiveUnreadable(String),
 }
 
 /// How long a terminal tree stays in the live set before the retention
@@ -449,6 +452,11 @@ impl std::fmt::Display for MoveError {
                 "the project's policy note for class \"{class}\" could not be stored, so the \
                  answer was not recorded and the row still waits. Retry once the store is \
                  writable"
+            ),
+            Self::ArchiveUnreadable(reason) => write!(
+                f,
+                "the task archive could not be read ({reason}), so this row is unknown rather \
+                 than absent. Retry"
             ),
         }
     }
@@ -1539,6 +1547,7 @@ impl Workspace {
         // close archives its rows at once and retention takes the rest, so a
         // digest that read only the live set would report a finished epic as
         // nothing at all - the very absence the strip exists to disprove.
+        let mut refused = None;
         match self.archived_tasks_for_project_checked(project_name) {
             Ok(archived) => {
                 for task in archived {
@@ -1547,13 +1556,17 @@ impl Workspace {
                     }
                 }
             }
-            Err(error) => tracing::warn!(
-                target: "forge_workspace::tasks",
-                event_name = "board_delta_archive_read_failed",
-                project = %project_name,
-                %error,
-                "the archive could not be read; the digest counts the live rows only",
-            ),
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::tasks",
+                    event_name = "board_delta_archive_read_failed",
+                    project = %project_name,
+                    %error,
+                    "the archive could not be read; the digest counts the live rows only",
+                );
+                refused =
+                    Some("the archive could not be read; the counts are live rows only".to_owned());
+            }
         }
         let history = {
             let guard = self.db.lock();
@@ -1650,6 +1663,7 @@ impl Workspace {
             landed_items: landed,
             expired_items: expired,
             merged_items: merged,
+            refused,
         }
     }
 
@@ -2392,23 +2406,8 @@ impl Workspace {
         archived
     }
 
-    /// A project's archived rows, oldest archive first.
-    pub fn archived_tasks_for_project(&self, project_name: &str) -> Vec<Task> {
-        match self.archived_tasks_for_project_checked(project_name) {
-            Ok(rows) => rows,
-            Err(error) => {
-                tracing::error!(
-                    target: "forge_workspace::tasks",
-                    project = %project_name,
-                    %error,
-                    "reading the task archive failed; the closed view draws live rows only",
-                );
-                Vec::new()
-            }
-        }
-    }
-
-    /// The archive read, with its failure kept apart from an empty archive:
+    /// A project's archived rows, oldest archive first, with the failure kept
+    /// apart from an empty archive:
     /// a caller looking a row up must not answer "no such task" for a store
     /// it could not read.
     pub fn archived_tasks_for_project_checked(
@@ -2434,7 +2433,9 @@ impl Workspace {
         project_name: &str,
         id: &TaskId,
     ) -> Result<Option<Task>, MoveError> {
-        let archived = self.archived_tasks_for_project(project_name);
+        let archived = self
+            .archived_tasks_for_project_checked(project_name)
+            .map_err(MoveError::ArchiveUnreadable)?;
         if !archived.iter().any(|task| task.id == *id) {
             return Ok(None);
         }

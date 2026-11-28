@@ -8,6 +8,7 @@
   import Picker from './Picker.svelte';
   import { digestLines, sampleClaim } from './digest';
   import type { BoardVoice } from './voice';
+  import { DISPOSITIONS } from './view';
   import type { NeedCard, WindowView } from './window';
   import { clockOf } from './window';
 
@@ -49,9 +50,6 @@
 
   /** How much of the evidence a collapsed card shows before it is expanded. */
   const SUMMARY_CHARS = 90;
-
-  /** An exception's disposals, enumerated as the core's are. */
-  const DISPOSITIONS = ['retry', 'rescope', 'drop', 'diagnose'] as const;
 
   /** The two deferrals the snooze control offers, one menu, one press each. */
   const SNOOZE_OPTIONS = [
@@ -190,6 +188,11 @@
           </li>
         {/each}
       </ul>
+      {#if view.attention.refused !== null && view.attention.refused !== undefined}
+        <!-- **A count the store could not read is not a zero.** The strip
+             says which half is missing rather than drawing an absence. -->
+        <p class="w-digest-warn">{view.attention.refused}</p>
+      {/if}
     </section>
   {/if}
   <section class="w-part" aria-labelledby="w-needs-h">

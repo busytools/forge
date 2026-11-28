@@ -99,14 +99,14 @@ carries:
 | a look | `Approve <artifact> or say what to change` | `approve` (filled), `send back` (outlined), the send-back words behind `add a note` |
 | decision | the question, with the options the lead enumerated | the options as filled pills, answered with one press; the note optional |
 | clarification | a question whose answer is the reader's own words | `answer in your words` opens the box, `answer` sends it as text |
+| exception | something the run could not settle | `retry`, `rescope`, `drop`, `diagnose` as filled presses, one disposition |
+| teaching | a recurring trouble and the class it belongs to | `write the lesson` opens the box, `settle the class` sends the words as the answer and the lesson |
 
 **Every word box on the board carries the composer's own dictation**: the
 send-back field, the answer box, the lesson box and the note all wear the mic,
 a take draws its bar in the field's place while it runs, and its words land
 back in the box that began them - one take per page, the same rule the
 composer and the review page keep.
-| exception | something the run could not settle | `retry`, `rescope`, `drop`, `diagnose` as filled presses, one disposition |
-| teaching | a recurring trouble and the class it belongs to | `write the lesson` opens the box, `settle the class` sends the words as the answer and the lesson |
 
 A **teaching's** answer writes a project policy note for its class: the
 project's leads read it from their next spawn (a resumed lead sees it after

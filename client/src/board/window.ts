@@ -87,6 +87,8 @@ export interface AttentionView {
   landed: number;
   expired: number;
   merged: number;
+  /** Why the archive half of the counts is missing; absent when whole. */
+  refused?: string | null;
   /** What each count holds; absent items on a payload older than the field. */
   items: {
     moved: DeltaItemView[];
@@ -361,6 +363,7 @@ export function windowView(
           landed: wireAttention.delta.landed,
           expired: wireAttention.delta.expired,
           merged: wireAttention.delta.merged,
+          refused: wireAttention.delta.refused ?? null,
           items: {
             moved: deltaItems(wireAttention.delta.moved_items),
             landed: deltaItems(wireAttention.delta.landed_items),

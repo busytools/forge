@@ -126,6 +126,11 @@ pub struct BoardDelta {
     /// What `merged` counts.
     #[serde(default)]
     pub merged_items: Vec<DeltaItem>,
+    /// Why the digest's archive half is missing, when it is: **a count the
+    /// store could not read is not a zero**, and the strip says so rather
+    /// than drawing an absence that reads as fact.
+    #[serde(default)]
+    pub refused: Option<String>,
 }
 
 /// One row behind a digest count, so the line that counts it opens onto

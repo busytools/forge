@@ -30,7 +30,7 @@
   import TaskDrawer from './TaskDrawer.svelte';
   import Window from './Window.svelte';
   import type { BoardFieldHandle, BoardVoice } from './voice';
-  import { applyMoves, boardView, landed } from './view';
+  import { applyMoves, boardView, DISPOSITIONS, landed } from './view';
   import type { BoardCardView, LaneView, PendingMove, WaitingView } from './view';
   import { clockOf, windowView } from './window';
   import type { ArchivedRead } from './archive';
@@ -348,8 +348,6 @@
   /** The epics a new row can nest under: the lanes' rows only, never a
    *  drawer's closed one. */
   const epics = $derived(laneRowsOf(board).filter((entry) => entry.task.parent === null));
-  /** An exception's four disposals, enumerated as the core's are. */
-  const DISPOSITIONS = ['retry', 'rescope', 'drop', 'diagnose'] as const;
 
   /** A strip note, per row: the optional words sent beside a choice. */
   const stripNotes: Record<string, string> = $state({});
@@ -1106,8 +1104,10 @@
                       value={answers[row.id] ?? ''}
                       oninput={(text: string) => (answers[row.id] = text)}
                       {voice}
-                      placeholder="your answer"
-                      label="your answer"
+                      placeholder={row.kind === 'teaching' ? 'the lesson' : 'your answer'}
+                      label={row.kind === 'teaching'
+                        ? 'the lesson that settles the class'
+                        : 'your answer'}
                       onkeydown={(event: KeyboardEvent) => {
                         if (event.key !== 'Enter' || event.shiftKey) return;
                         event.preventDefault();
@@ -1118,7 +1118,8 @@
                     <button
                       type="button"
                       class="b-btn b-plain"
-                      onclick={() => answerRow(row, { text: answers[row.id] ?? '' })}>answer</button
+                      onclick={() => answerRow(row, { text: answers[row.id] ?? '' })}
+                      >{row.kind === 'teaching' ? 'settle the class' : 'answer'}</button
                     >
                   {/if}
                 </div>

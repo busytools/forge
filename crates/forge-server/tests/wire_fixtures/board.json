@@ -23,7 +23,8 @@
           "moved_items": [],
           "landed_items": [],
           "expired_items": [],
-          "merged_items": []
+          "merged_items": [],
+          "refused": null
         },
         "sample": {
           "rows": [],

@@ -5,7 +5,14 @@
   import type { BoardRow, ByWire, TaskStatus } from '../wire/home';
   import { followable } from '../home/view';
   import BoardField from './BoardField.svelte';
-  import { artifactOf, fmtSecs, waitOnUser, waitSentence, type WaitingView } from './view';
+  import {
+    artifactOf,
+    DISPOSITIONS,
+    fmtSecs,
+    waitOnUser,
+    waitSentence,
+    type WaitingView,
+  } from './view';
   import type { BoardVoice } from './voice';
 
   /**
@@ -135,9 +142,6 @@
 
   let answer = $state('');
   let sendBack = $state('');
-
-  /** An exception's four disposals, enumerated as the core's are. */
-  const DISPOSITIONS = ['retry', 'rescope', 'drop', 'diagnose'] as const;
 
   /**
    * The answer a kind needs, worded as the card bar's own door: a decision's

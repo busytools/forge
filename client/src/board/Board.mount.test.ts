@@ -1830,19 +1830,32 @@ describe("the window's controls", () => {
   });
 
   it('holds the approve door on a root whose children are still open', () => {
-    // **Open means non-terminal, the core's own word** - the count comes from
-    // the rows, not the rollup's completed-only pair: a failed child is
-    // terminal and no longer holds the close.
-    const openChild = (id: string, status: Task['status']): BoardRow =>
+    const child = (id: string, status: Task['status']): BoardRow =>
       row(task(id, `child ${id}`, status, { parent: 'l1' }));
     windowOver([
       lookRow(verified, { rollup: [1, 3] }),
-      openChild('c1', 'in_progress'),
-      openChild('c2', 'in_progress'),
-      openChild('c3', 'failed'),
+      child('c1', 'in_progress'),
+      child('c2', 'in_progress'),
+      child('c3', 'failed'),
     ]);
     expect(byText('approve'), 'a root with open children cannot close').toBeNull();
     expect(document.querySelector('.w-hold')?.textContent).toContain('2 child rows are still open');
+  });
+
+  it('offers the approve door when the only children left are terminal', () => {
+    // **The bug's own case**: a failed or canceled child is terminal, so the
+    // core accepts the root's close - while the old completed-only rollup
+    // read `0 < 2` and withheld the door. The count of OPEN children is what
+    // decides, and here it is zero.
+    const child = (id: string, status: Task['status']): BoardRow =>
+      row(task(id, `child ${id}`, status, { parent: 'l1' }));
+    windowOver([
+      lookRow(verified, { rollup: [0, 2] }),
+      child('c1', 'failed'),
+      child('c2', 'canceled'),
+    ]);
+    expect(byText('approve'), 'a terminal-only tree closes on the look').not.toBeNull();
+    expect(document.querySelector('.w-hold'), 'no refusal is drawn').toBeNull();
   });
 });
 

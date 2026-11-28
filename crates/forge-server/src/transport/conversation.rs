@@ -2824,6 +2824,30 @@ mod tests {
         );
     }
 
+    /// **A reseed is a new conversation in the same copy.** The cache keys on
+    /// the copy's identity and content version, so a reconnect that replaces
+    /// the history must move the version - otherwise the sample serves the
+    /// previous conversation's actions until a frame lands.
+    #[test]
+    fn the_attention_sample_moves_after_a_reseed() {
+        let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let conversations = Conversations::new();
+        conversations.apply(&a_connect_for(&seat, vec![a_tool_frame("aa")]), None);
+        let first = conversations.attention_actions("proj", SystemTime::UNIX_EPOCH);
+        assert!(first.iter().any(|action| action.detail == "aa"), "{first:?}");
+        // The same weight, a different conversation: a resume's history.
+        conversations.apply(&a_connect_for(&seat, vec![a_tool_frame("bb")]), None);
+        let second = conversations.attention_actions("proj", SystemTime::UNIX_EPOCH);
+        assert!(
+            second.iter().any(|action| action.detail == "bb"),
+            "the reseeded conversation is sampled: {second:?}",
+        );
+        assert!(
+            !second.iter().any(|action| action.detail == "aa"),
+            "the previous conversation's action is gone: {second:?}",
+        );
+    }
+
     /// One seat's copy weighs this much, measured rather than assumed.
     fn a_seat_weight() -> usize {
         let history: Vec<Message> = (0..40).map(|i| a_frame(&format!("message {i}"))).collect();

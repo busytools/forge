@@ -136,6 +136,9 @@ export function landed(rows: BoardRow[], id: string, want: PendingMove): boolean
   return at !== -1 && (lane[at + 1] ?? null) === want.before;
 }
 
+/** An exception's four disposals, enumerated as the core's are. */
+export const DISPOSITIONS = ['retry', 'rescope', 'drop', 'diagnose'] as const;
+
 /** One row waiting on the user, as the strip draws it. */
 export interface WaitingView {
   id: string;
