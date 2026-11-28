@@ -859,9 +859,11 @@ always. What it asks, and on what clock, is a constant in the code:
   parked waiting on the owner; a restated estimate (a different duration)
   arms the nudge again; a wait that resolved asks its waiter once to
   resume it. A waiting or pending row is not being worked, so its worked
-  time past an estimate draws no overrun ask.
-- **An in-progress row still past its estimate 30 minutes after its
-  re-plan ask tells the lead once per estimate.** The escalation is
+  time past an estimate draws no overrun nudge.
+- **A row still past its estimate 30 minutes after its re-plan ask tells
+  the lead once per estimate**, whether it is still in progress or still
+  waiting in the park the chase wrote. A row waiting on the user, on a
+  dependency, or parked by its owner is never escalated. The escalation is
   authority: rescope, reassign, take over, or restate the expectation.
 - **A failed row, one whose owner is gone, an epic still owing its retro,
   and one ready to close each tell the lead every 30 minutes** while the

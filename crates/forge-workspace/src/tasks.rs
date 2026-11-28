@@ -787,6 +787,7 @@ impl Workspace {
                     on: None,
                     verification: true,
                     parked: false,
+                    replan: false,
                     // A look carries a deadline too, and its default
                     // escalates: a look is never approved by a timer.
                     due: Some(default_user_deadline(at)),
@@ -1194,6 +1195,7 @@ impl Workspace {
                 on: None,
                 verification: true,
                 parked: false,
+                replan: false,
                 due: Some(default_user_deadline(at)),
                 acknowledged_at: None,
                 snoozed: None,
@@ -2058,6 +2060,9 @@ impl Workspace {
                 on,
                 verification: false,
                 parked: false,
+                // The same wait restated keeps its start and its origin: a
+                // re-plan park the owner re-states is still the chase's.
+                replan: same.is_some_and(|wait| wait.replan),
                 // Every item carries a deadline: one the asker named, else
                 // the escalate default.
                 due: due.or_else(|| (kind == WaitingKind::User).then(|| default_user_deadline(at))),
@@ -2093,7 +2098,9 @@ impl Workspace {
 
     /// Park an overrun row waiting on its owner: the chase's re-plan ask is a
     /// state the board draws, not a message alone. A row already off
-    /// `in_progress` is left alone - the owner got there first.
+    /// `in_progress` is left alone - the owner got there first. The wait
+    /// carries `replan`, so the escalation follows its own ask rather than
+    /// treating this park as a stall.
     pub(crate) fn park_overrun(&self, project_name: &str, id: &TaskId) -> Option<Task> {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
@@ -2112,6 +2119,7 @@ impl Workspace {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: true,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -3201,6 +3209,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -3296,6 +3305,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -3435,6 +3445,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: false,
                 since: Some(SystemTime::now()),
                 due: None,
                 acknowledged_at: None,
@@ -4711,6 +4722,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -4753,6 +4765,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -4830,6 +4843,7 @@ mod tests {
             on,
             verification: false,
             parked: false,
+            replan: false,
             due: None,
             acknowledged_at: None,
             snoozed: None,
@@ -5103,6 +5117,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,
@@ -5378,6 +5393,7 @@ mod tests {
                 on: Some(TaskId::from("blocker")),
                 verification: false,
                 parked: false,
+                replan: false,
                 due: None,
                 acknowledged_at: None,
                 snoozed: None,

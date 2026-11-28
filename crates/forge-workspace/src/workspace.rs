@@ -13060,6 +13060,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            replan: false,
             since: None,
             due: None,
             acknowledged_at: None,

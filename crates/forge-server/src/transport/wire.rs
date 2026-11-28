@@ -6167,6 +6167,7 @@ mod tests {
                     on: None,
                     verification: false,
                     parked: false,
+                    replan: false,
                     since: Some(
                         std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5),
                     ),
