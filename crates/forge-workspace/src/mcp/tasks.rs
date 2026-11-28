@@ -144,7 +144,13 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             serde_json::json!({
                 "commit": evidence.commit,
                 "path": evidence.path,
-                "lead_verified": evidence.lead_verified,
+                // A block stored before the write seams dropped blank
+                // words reads the way a call states it: no quote at all.
+                "lead_verified": evidence
+                    .lead_verified
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|words| !words.is_empty()),
                 "excerpt": evidence.excerpt,
                 // The wire's `verified at`: absent until the gate's check
                 // passed, so an unchecked claim reads as unknown.
@@ -506,7 +512,8 @@ impl Tool for Update {
          complete a worker's task and a worker can put a row it holds into waiting - except \
          that a row whose claim is the project lead's verification (`lead_verified`) completes \
          only from the lead's seat, or by the user's own approve, and only the lead may \
-         restate that evidence block; a worker completes on the artifact instead. A row \
+         restate that evidence block; a worker asks its lead to complete the row, or to \
+         restate the claim with the artifact. A row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
          it, and a cancel of a row waiting on the user is the withdraw door once the ask has \
          gone moot: it needs `detail`, the reason the ask is withdrawn, which lands on the row, \
@@ -851,9 +858,11 @@ fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
 /// The board's compact state word: `verified`, `failed` or `unchecked`.
 /// `verified` covers both what the stamp covers - a passed check of the
 /// artifact, and the project lead's word for one the check cannot reach -
-/// because a lead-vouched completion is stamped like any other. Which it
-/// was is on the block, and the block only reaches `tasks__get`'s detail;
-/// this word is all the compact board row carries.
+/// because a lead-vouched completion is stamped like any other. `failed`
+/// survives only for a block an earlier build stored with its problem: a
+/// refusal today refuses the move and never lands on the row, so a live
+/// row reads `verified` or `unchecked`. Which form verified it is on the
+/// block, and the block only reaches `tasks__get`'s detail.
 fn evidence_state(evidence: &forge_primitives::tasks::Evidence) -> &'static str {
     match (&evidence.verified_at, &evidence.problem) {
         (Some(_), _) => "verified",
