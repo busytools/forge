@@ -198,9 +198,11 @@ pub(crate) fn crossings(
         let wait = row.task.waiting_on.as_ref();
         let parked = wait.is_some_and(|wait| wait.parked);
 
-        // Signal 1a: finite work past its estimate owes a re-plan. The ask
-        // is one per estimate and parks the row; the sweep writes the park.
-        if let Some(estimate) = estimate.filter(|_| over)
+        // Signal 1a: open finite work past its estimate owes a re-plan; a
+        // landed row's numbers are history. The ask is one per estimate and
+        // parks the row; the sweep writes the park.
+        if !row.task.status.is_terminal()
+            && let Some(estimate) = estimate.filter(|_| over)
             && !fired_already(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
         {
             out.push(Crossing {
@@ -218,9 +220,11 @@ pub(crate) fn crossings(
                 ),
             });
         }
-        // The escalation: once per estimate, and only after the ask had its
-        // cadence unanswered. Then this estimate is done being chased.
-        if over
+        // The escalation: once per estimate, only while the row is still
+        // open, and only after the ask had its cadence unanswered. Then this
+        // estimate is done being chased.
+        if !row.task.status.is_terminal()
+            && over
             && let Some(estimate) = estimate
             && !fired_already(fired, ChaseRung::Escalate, id, Some(&estimate.secs.to_string()))
             && let Some(asked) =
@@ -1122,6 +1126,47 @@ mod tests {
             says(&deliver, "the re-plan ask is unanswered"),
             1,
             "and the chase stops after that, however long the overrun holds",
+        );
+    }
+
+    /// A completed row over its estimate is never chased: a landed child of
+    /// an epic is resting, not overdue.
+    #[test]
+    fn a_completed_row_over_its_estimate_is_not_chased() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Completed);
+        row.estimate = Some(Estimate { words: "10s".to_owned(), secs: 10 });
+        row.updated_at = epoch(100);
+        ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 10);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Completed, 100);
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, 200), 0, "a completed row is not asked to re-plan");
+        assert!(deliver.seen.lock().is_empty(), "nothing is delivered: {:?}", deliver.seen.lock());
+
+        // The ask landed while the row was open and the row closed before the
+        // cadence ran out: the escalation reads the logged ask and must stay
+        // quiet on the landed row.
+        ws.record_chase(&TaskChase {
+            task_id: Some(TaskId::from("t-1")),
+            subject: Some("10".to_owned()),
+            project_name: PROJECT.to_owned(),
+            rung: ChaseRung::EstimateNudge,
+            at: epoch(100),
+        });
+        assert_eq!(
+            sweep(&ws, &deliver, 201 + CHASE_CADENCE_SECS),
+            0,
+            "nor is the lead escalated once the cadence passes",
+        );
+        assert!(deliver.seen.lock().is_empty(), "still nothing: {:?}", deliver.seen.lock());
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::Escalate),
+            "no escalation is logged for a landed row: {:?}",
+            ws.chases_for_project(PROJECT),
         );
     }
 
