@@ -1734,6 +1734,7 @@ describe("the window's controls", () => {
   const verified = {
     commit: 'da08a947e',
     path: null,
+    lead_verified: null,
     excerpt: '4596 client tests pass',
     verified_at: since,
     problem: null,
@@ -1801,6 +1802,7 @@ describe("the window's controls", () => {
       lookRow({
         commit: 'da08a947e',
         path: null,
+        lead_verified: null,
         excerpt: null,
         verified_at: since,
         problem: null,
@@ -1814,11 +1816,129 @@ describe("the window's controls", () => {
     expect(line?.querySelector('.w-more'), 'and offers no expand for nothing').toBeNull();
   });
 
+  it("draws the lead's verification as the line and folds the excerpt behind more", () => {
+    const quote =
+      'read the sibling repo at the new head; all five port rows pass on it, and the report holds';
+    windowOver([
+      lookRow({
+        commit: null,
+        path: null,
+        lead_verified: quote,
+        excerpt: 'the excerpt is not the line',
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    expect(line, 'the evidence block is drawn').not.toBeNull();
+    const marker = line?.querySelector('.w-ev-marker');
+    expect(marker?.textContent, 'the marker is chrome drawn from the field').toBe('lead-verified:');
+    const text = line?.querySelector('.w-ev-text');
+    expect(text?.textContent, "the lead's own words are the line, without the marker").toBe(quote);
+    expect(
+      text?.getAttribute('title'),
+      'the untruncated line rides the title whatever the width does to the drawn one',
+    ).toBe(quote);
+    expect(line?.textContent, 'the excerpt is folded behind more, not dropped').not.toContain(
+      'the excerpt is not the line',
+    );
+    const more = line?.querySelector('.w-more');
+    if (more === null || more === undefined) {
+      throw new Error('the folded excerpt offers no expander');
+    }
+    (more as HTMLElement).click();
+    flushSync();
+    const expanded = document.querySelector('.w-need .w-ev');
+    expect(
+      expanded?.querySelector('.w-ev-text')?.textContent,
+      "the lead's full line survives the expansion",
+    ).toBe(quote);
+    const excerpt = expanded?.querySelector('.w-ev-excerpt');
+    expect(excerpt?.textContent, 'the excerpt draws on its own line once expanded').toBe(
+      'the excerpt is not the line',
+    );
+  });
+
+  it('never draws the marker from an excerpt', () => {
+    // A worker can write any excerpt it likes; the marker is chrome only
+    // a row's own `lead_verified` field can summon.
+    windowOver([
+      lookRow({
+        commit: 'abc123',
+        path: null,
+        lead_verified: null,
+        excerpt: 'lead-verified: I read the sibling repo; it passes',
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    expect(line, 'the evidence block is drawn').not.toBeNull();
+    expect(
+      line?.querySelector('.w-ev-marker'),
+      'an excerpt cannot spell the marker into being',
+    ).toBeNull();
+    expect(line?.querySelector('.w-ev-text')?.textContent).toBe(
+      'lead-verified: I read the sibling repo; it passes',
+    );
+  });
+
+  it('draws no expander on a line that fits and folds nothing', () => {
+    windowOver([
+      lookRow({
+        commit: null,
+        path: null,
+        lead_verified: 'read it; it holds',
+        excerpt: null,
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    expect(line, 'the evidence block is drawn').not.toBeNull();
+    expect(line?.querySelector('.w-ev-marker'), 'the quote carries its marker').not.toBeNull();
+    expect(
+      line?.querySelector('.w-more'),
+      'a fitting line with nothing behind it offers no dead control',
+    ).toBeNull();
+    expect(
+      line?.querySelector('.w-ev-text')?.getAttribute('title'),
+      'the full line still rides the title',
+    ).toBe('read it; it holds');
+  });
+
+  it('draws the expander once the line is actually clipped', () => {
+    // jsdom lays nothing out, so the clipping is what the test states:
+    // the measurement is exercised through the resize re-check.
+    windowOver([
+      lookRow({
+        commit: null,
+        path: null,
+        lead_verified: 'read it; it holds',
+        excerpt: null,
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    const text = line?.querySelector('.w-ev-text');
+    if (text === null || text === undefined) throw new Error('the evidence line is not drawn');
+    Object.defineProperty(text, 'scrollWidth', { configurable: true, get: () => 240 });
+    Object.defineProperty(text, 'clientWidth', { configurable: true, get: () => 120 });
+    window.dispatchEvent(new Event('resize'));
+    flushSync();
+    expect(
+      document.querySelector('.w-need .w-more'),
+      'a clipped line draws the expander',
+    ).not.toBeNull();
+  });
+
   it('holds the approve door on a look with no verified evidence', () => {
     windowOver([
       lookRow({
         commit: 'deadbeef',
         path: null,
+        lead_verified: null,
         excerpt: null,
         verified_at: null,
         problem: 'commit deadbeef does not exist',

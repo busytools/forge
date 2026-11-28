@@ -12625,6 +12625,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -12691,6 +12692,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -12722,6 +12724,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -12793,6 +12796,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -12938,6 +12942,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -13045,6 +13050,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -13216,6 +13222,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -13273,6 +13280,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -13328,6 +13336,7 @@ mod tests {
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -13432,6 +13441,7 @@ path = "{}"
             evidence: Some(forge_primitives::tasks::Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,

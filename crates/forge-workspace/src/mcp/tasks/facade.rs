@@ -73,8 +73,22 @@ pub(crate) struct EvidenceDraft {
     pub commit: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    /// The project lead's own verification, in words. Bound like the
+    /// excerpt it stands in for: trimmed, with blank words read as no
+    /// claim at all.
+    #[serde(default)]
+    pub lead_verified: Option<String>,
     #[serde(default)]
     pub excerpt: Option<String>,
+}
+
+/// Whether an evidence draft states the lead's verification, read through
+/// the one seam that defines a blank quote as no claim.
+fn states_lead_verification(evidence: Option<&EvidenceDraft>) -> bool {
+    forge_primitives::tasks::lead_verification(
+        evidence.and_then(|evidence| evidence.lead_verified.as_deref()),
+    )
+    .is_some()
 }
 
 impl EvidenceDraft {
@@ -85,6 +99,8 @@ impl EvidenceDraft {
         Evidence {
             commit: named(&self.commit),
             path: named(&self.path),
+            lead_verified: named(&self.lead_verified)
+                .map(|words| Evidence::bounded_excerpt(&words)),
             excerpt: self
                 .excerpt
                 .as_deref()
@@ -493,6 +509,19 @@ impl TasksFacade for ProdTasksFacade {
                     .to_owned(),
             ));
         }
+        // **Only the lead writes its own verification.** The gate refuses a
+        // worker's completion on the quote, but a worker that plants one on
+        // a row it never completes leaves a later lead move stamping the
+        // worker's words as its own - so the write doors refuse it too.
+        if states_lead_verification(draft.evidence.as_ref()) && caller.label() != crate::LEAD_LABEL
+        {
+            return Err(TasksError::Refused(
+                "only the project lead states `lead_verified` when it creates a row: it is the \
+                 lead's own word for an artifact the gate cannot check, and a worker cannot \
+                 vouch for its own work"
+                    .to_owned(),
+            ));
+        }
         let mut task = Task {
             id: TaskId::from(uuid::Uuid::new_v4().to_string()),
             project_name: cx.project_name.clone(),
@@ -552,7 +581,7 @@ impl TasksFacade for ProdTasksFacade {
         // like any other, and goes through the same gate: creation is not
         // a way around the evidence.
         if task.status == TaskStatus::Completed {
-            ws.verify_completion_evidence(&cx.project_name, &mut task)
+            ws.verify_completion_evidence(&cx.project_name, &mut task, &By::Seat(caller.clone()))
                 .map_err(|refused| TasksError::Refused(refused.to_string()))?;
             // Nor a way around the look park: a finished row whose own
             // completion waits on the user lands waiting on that look.
@@ -671,6 +700,21 @@ impl TasksFacade for ProdTasksFacade {
                     .to_owned(),
             ));
         }
+        // The write door refuses the field for the same reason the gate
+        // refuses the completion: the quote is the lead's own word, and an
+        // update is the other way to plant one.
+        if states_lead_verification(patch.evidence.as_ref()) && caller.label() != crate::LEAD_LABEL
+        {
+            return Err(TasksError::Refused(
+                "only the project lead states `lead_verified` on an update: it is the lead's \
+                 own word for an artifact the gate cannot check, and a worker cannot vouch \
+                 for its own work"
+                    .to_owned(),
+            ));
+        }
+        // The vouched-row restatement rule is the move's own (tasks.rs):
+        // it runs inside the lock that resolved the row, so a stated
+        // prefix cannot slip past a separate scan here.
         let estimate = match patch.estimate.as_deref() {
             Some(words) => Some(
                 Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
@@ -1363,6 +1407,7 @@ mod prod_facade_tests {
             evidence: Some(Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -1395,6 +1440,7 @@ mod prod_facade_tests {
             evidence: Some(EvidenceDraft {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
             }),
         }
@@ -1462,6 +1508,321 @@ mod prod_facade_tests {
         assert!(
             matches!(&refused, TasksError::Refused(said) if said.contains("only the project lead")),
             "the wait door says whose it is: {refused:?}",
+        );
+    }
+
+    /// The lead's verification is the lead's to write, not only to move a
+    /// completion with: a worker planting a quote would leave a later lead
+    /// move stamping the worker's words as its own, so both write doors
+    /// refuse it.
+    #[test]
+    fn a_worker_cannot_write_a_lead_verification() {
+        let (ws, facade, lead, worker) = fixture();
+        let row = facade
+            .create_task(&lead, draft("plain", Some("reviewer"), None))
+            .expect("lead creates");
+
+        let refused = facade
+            .update_task(
+                &worker,
+                &row.id,
+                TaskPatch {
+                    evidence: Some(EvidenceDraft {
+                        commit: None,
+                        path: None,
+                        lead_verified: Some("the port rows pass, trust me".to_owned()),
+                        excerpt: None,
+                    }),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect_err("an update is a write of the field");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("only the project lead")),
+            "the update door refuses the quote: {refused:?}",
+        );
+        let stored = ws.tasks_for_project("myproj");
+        assert!(
+            stored
+                .iter()
+                .find(|task| task.id == row.id)
+                .and_then(|task| task.evidence.as_ref())
+                .and_then(|evidence| evidence.lead_verified.as_ref())
+                .is_none(),
+            "the worker's words never landed",
+        );
+
+        let before = ws.tasks_for_project("myproj").len();
+        let refused = facade
+            .create_task(
+                &worker,
+                TaskDraft {
+                    status: Some(TaskStatus::Completed),
+                    evidence: Some(EvidenceDraft {
+                        commit: None,
+                        path: None,
+                        lead_verified: Some("the port rows pass".to_owned()),
+                        excerpt: None,
+                    }),
+                    ..draft("done", None, None)
+                },
+            )
+            .expect_err("creation is the other write door");
+        assert!(
+            matches!(&refused, TasksError::Refused(said)
+                if said.contains("when it creates a row")),
+            "the create door refuses the quote by its own clause: {refused:?}",
+        );
+        assert_eq!(ws.tasks_for_project("myproj").len(), before, "the refusal left no row behind");
+
+        // The lead's own create is admitted, lands under the look gate,
+        // and its words are trimmed and bounded like the excerpt they
+        // stand in for.
+        let long = format!("  {}  ", "ported and read; ".repeat(400));
+        let row = facade
+            .create_task(
+                &lead,
+                TaskDraft {
+                    status: Some(TaskStatus::Completed),
+                    verify: Some(Verify::User),
+                    evidence: Some(EvidenceDraft {
+                        commit: None,
+                        path: None,
+                        lead_verified: Some(long),
+                        excerpt: None,
+                    }),
+                    ..draft("done by the lead's word", None, None)
+                },
+            )
+            .expect("the lead's word is admitted");
+        assert_eq!(row.status, TaskStatus::Waiting, "the look gate parks it");
+        assert!(
+            row.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "it waits on the user's look",
+        );
+        let quote = row
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.lead_verified.as_deref())
+            .expect("the quote lands on the block");
+        assert!(!quote.starts_with(' ') && !quote.ends_with(' '), "the words are trimmed");
+        assert_eq!(
+            quote.chars().count(),
+            forge_primitives::tasks::EVIDENCE_EXCERPT_MAX,
+            "bounded like the excerpt it stands in for",
+        );
+    }
+
+    /// The lead's own admitted door: the quote lands in the update that
+    /// completes the row, and the same door does not over-refuse a plain
+    /// commit-only restatement.
+    #[test]
+    fn the_lead_states_the_quote_on_the_update_that_completes() {
+        let (_ws, facade, lead, worker) = fixture();
+        let row = facade
+            .create_task(&lead, TaskDraft { evidence: None, ..draft("the port rows", None, None) })
+            .expect("lead creates");
+        let quote = "read the sibling repo; the five port rows pass";
+        let done = facade
+            .update_task(
+                &lead,
+                &row.id,
+                TaskPatch {
+                    status: Some(TaskStatus::Completed),
+                    version: Some(row.version),
+                    evidence: Some(EvidenceDraft {
+                        commit: None,
+                        path: None,
+                        lead_verified: Some(quote.to_owned()),
+                        excerpt: None,
+                    }),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("the lead's own move is admitted");
+        assert_eq!(done.status, TaskStatus::Completed);
+        assert_eq!(
+            done.evidence.as_ref().and_then(|evidence| evidence.lead_verified.as_deref()),
+            Some(quote),
+            "the quote lands where the lead stated it",
+        );
+
+        // A plain row is not vouched, so a worker's commit-only evidence
+        // update is admitted: the door refuses the quote, not the
+        // artifact, and the vouched-row rule has nothing to keep.
+        let plain = facade
+            .create_task(&lead, TaskDraft { evidence: None, ..draft("a plain row", None, None) })
+            .expect("lead creates");
+        let updated = facade
+            .update_task(
+                &worker,
+                &plain.id,
+                TaskPatch {
+                    version: Some(plain.version),
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        lead_verified: None,
+                        excerpt: None,
+                    }),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("a worker's commit-only restatement is admitted");
+        assert_eq!(
+            updated.evidence.as_ref().and_then(|evidence| evidence.commit.as_deref()),
+            Some("test-commit"),
+            "the door refuses only the quote, not the artifact",
+        );
+    }
+
+    /// A row whose claim is the lead's verification keeps it: a worker
+    /// replacing the evidence block is refused, and the lead restates
+    /// freely.
+    #[test]
+    fn a_worker_cannot_clear_a_lead_verification() {
+        let (ws, facade, lead, worker) = fixture();
+        let quote = "read the sibling repo; it holds";
+        let row = facade
+            .create_task(
+                &lead,
+                TaskDraft {
+                    evidence: Some(EvidenceDraft {
+                        commit: None,
+                        path: None,
+                        lead_verified: Some(quote.to_owned()),
+                        excerpt: None,
+                    }),
+                    ..draft("a vouched row", None, None)
+                },
+            )
+            .expect("the lead states the quote");
+
+        let refused = facade
+            .update_task(
+                &worker,
+                &row.id,
+                TaskPatch {
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        lead_verified: None,
+                        excerpt: None,
+                    }),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect_err("a worker cannot draw the lead's word away");
+        assert!(
+            matches!(&refused, TasksError::Refused(said)
+                if said.contains("only the lead may restate it")),
+            "the row keeps its claim: {refused:?}",
+        );
+        let stored = ws.tasks_for_project("myproj");
+        assert_eq!(
+            stored
+                .iter()
+                .find(|task| task.id == row.id)
+                .and_then(|task| task.evidence.as_ref())
+                .and_then(|evidence| evidence.lead_verified.as_deref()),
+            Some(quote),
+            "the worker's replacement never landed",
+        );
+
+        // A stated prefix resolves to the same row, so it cannot slip the
+        // replacement past the scan either.
+        let short = row.id.as_str().chars().take(8).collect::<String>();
+        let refused = facade
+            .update_task(
+                &worker,
+                &TaskId::from(short.as_str()),
+                TaskPatch {
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        lead_verified: None,
+                        excerpt: None,
+                    }),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect_err("a prefix names the same vouched row");
+        assert!(
+            matches!(&refused, TasksError::Refused(said)
+                if said.contains("only the lead may restate it")),
+            "a prefix cannot clear the claim: {refused:?}",
+        );
+
+        facade
+            .update_task(
+                &lead,
+                &row.id,
+                TaskPatch {
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        lead_verified: None,
+                        excerpt: None,
+                    }),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("the lead restates freely");
+    }
+
+    /// Blank words are no claim at all at either write door: nothing is
+    /// stored, and nothing is refused.
+    #[test]
+    fn a_blank_quote_is_no_claim_at_either_door() {
+        // Both calls run as the worker: the lead's door is exempt from
+        // every guard, so a lead-only test would say nothing about the
+        // normalization. The plain row carries no quote, so the
+        // vouched-row restatement rule does not fire either.
+        let (ws, facade, lead, worker) = fixture();
+        let row = facade
+            .create_task(
+                &worker,
+                TaskDraft {
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        lead_verified: Some("   ".to_owned()),
+                        excerpt: None,
+                    }),
+                    ..draft("blank at creation", None, None)
+                },
+            )
+            .expect("a blank quote is no claim, even from a worker");
+        assert!(
+            row.evidence.as_ref().and_then(|evidence| evidence.lead_verified.as_ref()).is_none(),
+            "nothing was stored at creation",
+        );
+
+        let row = facade.create_task(&lead, draft("plain", None, None)).expect("lead creates");
+        facade
+            .update_task(
+                &worker,
+                &row.id,
+                TaskPatch {
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        lead_verified: Some("  \t ".to_owned()),
+                        excerpt: None,
+                    }),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("a blank update is admitted");
+        let stored = ws.tasks_for_project("myproj");
+        assert!(
+            stored
+                .iter()
+                .find(|task| task.id == row.id)
+                .and_then(|task| task.evidence.as_ref())
+                .and_then(|evidence| evidence.lead_verified.as_ref())
+                .is_none(),
+            "nothing was stored by the update",
         );
     }
 
@@ -2171,6 +2532,7 @@ mod prod_facade_tests {
                     evidence: Some(EvidenceDraft {
                         commit: Some("test-commit".to_owned()),
                         path: None,
+                        lead_verified: None,
                         excerpt: None,
                     }),
                     ..draft("the parked row", Some("reviewer"), Some("epic"))
@@ -2225,6 +2587,7 @@ mod prod_facade_tests {
                     evidence: Some(EvidenceDraft {
                         commit: Some("test-commit".to_owned()),
                         path: None,
+                        lead_verified: None,
                         excerpt: None,
                     }),
                     ..draft("the parked row", Some("reviewer"), Some("epic"))

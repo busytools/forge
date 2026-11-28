@@ -883,11 +883,17 @@ button.b-epic-pill { cursor: pointer; }
 /* The evidence is one summary line until the reader asks for the rest; the
    state word rides it, so a card states its verdict without a second row. */
 .w-ev {
-  display: flex; align-items: baseline; gap: 8px; margin: 2px 0 0; min-width: 0;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 2px 0 0;
+  min-width: 0; font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
 }
 .w-ev-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .w-ev.open .w-ev-text { white-space: normal; }
+/* The lead's marker is chrome, drawn only from the row's own field - an
+   excerpt can never spell it into being. */
+.w-ev-marker { color: var(--blue); }
+/* The excerpt a lead's quote folded away takes its own line once the
+   reader expands the block; it wraps rather than ellipsising. */
+.w-ev-excerpt { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
 .w-more {
   background: none; border: none; padding: 2px 0; color: var(--dim);
   font-family: var(--mono); font-size: var(--fs-label); cursor: pointer;
@@ -980,6 +986,8 @@ button.b-epic-pill { cursor: pointer; }
   .w-link, .w-digest-line, .w-who, .w-exc .w-link {
     min-height: 44px;
   }
+  /* The expander is a short word, so its target needs the width too. */
+  .w-more { min-width: 44px; }
   /* The footer trigger carries the footer's own min-height, so it needs its
      own coarse rule at the same specificity. */
   .b-pick.w-foot-pill { min-height: 44px; }

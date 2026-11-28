@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { flip } from 'svelte/animate';
   import { fade, fly } from 'svelte/transition';
   import { hrefForSlot } from '../routes';
@@ -41,15 +42,15 @@
   const words: Record<string, string> = $state({});
   /** Whether a card's note box is open: a card reads as an ask, not a form. */
   const noteOpen: Record<string, boolean> = $state({});
-  /** Whether a card's evidence is expanded: one summary line until asked. */
+  /** Whether a card's evidence is expanded: one line until asked. */
   const evidenceOpen: Record<string, boolean> = $state({});
   /** Which digest line is open on its items, by the line's own key. */
   const digestOpen: Record<string, boolean> = $state({});
   /** The deferral the person chose, per row, so the control names it. */
   const snoozeChoice: Record<string, string> = $state({});
-
-  /** How much of the evidence a collapsed card shows before it is expanded. */
-  const SUMMARY_CHARS = 90;
+  /** Whether a card's evidence line is actually clipped at its width: the
+   *  expander is drawn only when there is something more to show. */
+  const clipped: Record<string, boolean> = $state({});
 
   /** The two deferrals the snooze control offers, one menu, one press each. */
   const SNOOZE_OPTIONS = [
@@ -111,8 +112,40 @@
     return `nothing needs you - checked ${at} · ${agents} · ${sampleClaim(attention)}`;
   }
 
-  function summaryOf(text: string): string {
-    return text.length > SUMMARY_CHARS ? `${text.slice(0, SUMMARY_CHARS).trimEnd()}...` : text;
+  /** Measure whether an evidence line is clipped, re-checked on resize and
+   *  whenever the line's words change: a character count cannot know the
+   *  card's width, and a control that re-renders the same string is worse
+   *  than none. The text rides the parameter so a live rewrite re-measures. */
+  function measureEvidence(
+    node: HTMLElement,
+    params: [id: string, text: string],
+  ): {
+    update: () => void;
+    destroy: () => void;
+  } {
+    const [id] = params;
+    const check = (): void => {
+      clipped[id] = node.scrollWidth > node.clientWidth + 1;
+    };
+    // A new param means the words changed; measure after the text lands,
+    // not against the previous string Svelte has not replaced yet.
+    const remeasure = (): void => {
+      void tick().then(check);
+    };
+    check();
+    // One observer per line measures content and box together; the window
+    // listener is the fallback where ResizeObserver is absent.
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(check);
+    observer?.observe(node);
+    if (observer === null) window.addEventListener('resize', check);
+    return {
+      update: remeasure,
+      destroy(): void {
+        observer?.disconnect();
+        if (observer === null) window.removeEventListener('resize', check);
+        clipped[id] = false;
+      },
+    };
   }
 
   function act(command: Record<string, Record<string, unknown>>): void {
@@ -257,14 +290,27 @@
                 >look at <span class="nm">{card.artifact.label}</span></a
               >
             {/if}
-            {#if chip !== null || card.evidence !== null}
+            {#if chip !== null || card.vouched !== null || card.evidence !== null}
+              {@const line = card.vouched ?? card.evidence}
+              {@const folded = card.vouched === null ? null : card.evidence}
               <div class="w-ev" class:open={expanded}>
                 {#if chip !== null}<span class="b-chip {chip.tone}">{chip.label}</span>{/if}
-                {#if card.evidence !== null}
-                  <span class="w-ev-text"
-                    >{expanded ? card.evidence : summaryOf(card.evidence)}</span
+                <!-- `lead-verified:` is chrome, drawn only when the row's
+                     own field carries the lead's words; an excerpt can
+                     never compose it. -->
+                {#if card.vouched !== null}
+                  <span class="w-ev-marker">lead-verified:</span>
+                {/if}
+                {#if line !== null}
+                  <!-- The whole line is drawn and the CSS clips it; the
+                       action measures whether it is actually clipped, so
+                       `more` appears only when it has something to show
+                       (or an excerpt is folded behind it). The full line
+                       always rides the title. -->
+                  <span class="w-ev-text" title={line} use:measureEvidence={[card.id, line]}
+                    >{line}</span
                   >
-                  {#if card.evidence.length > SUMMARY_CHARS}
+                  {#if folded !== null || clipped[card.id] === true || expanded}
                     <button
                       type="button"
                       class="w-more"
@@ -273,6 +319,11 @@
                       >{expanded ? 'less' : 'more'}</button
                     >
                   {/if}
+                {/if}
+                <!-- The excerpt a lead's quote folded away keeps its own
+                     line under it, once the reader asks for the rest. -->
+                {#if expanded && folded !== null}
+                  <span class="w-ev-text w-ev-excerpt">{folded}</span>
                 {/if}
               </div>
             {/if}

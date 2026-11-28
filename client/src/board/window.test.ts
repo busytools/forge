@@ -104,6 +104,7 @@ describe('the window', () => {
       evidence: {
         commit: 'abc123',
         path: null,
+        lead_verified: null,
         excerpt: '12 tests run: 12 passed',
         verified_at: null,
         problem: null,
@@ -117,10 +118,134 @@ describe('the window', () => {
     expect(card?.question).toBe('Ship it behind a flag?');
     expect(card?.options).toEqual(['flag it', 'ship it']);
     expect(card?.evidence).toBe('12 tests run: 12 passed');
+    expect(card?.vouched, 'no quote rides this row').toBeNull();
     expect(card?.evidenceState).toBe('unchecked');
     expect(card?.owner).toBe('w-1');
     expect(card?.seat?.label).toBe('w-1');
     expect(card?.age).toBe('2m');
+  });
+
+  it("carries the lead's verification as the evidence line when the row has one", () => {
+    const ask = task('t1', 'waiting', {
+      waiting_on: {
+        kind: 'user',
+        detail: null,
+        on: null,
+        verification: false,
+        since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+      },
+      request: {
+        kind: 'decision',
+        question: 'Ship it?',
+        options: ['ship it', 'wait'],
+        answer: null,
+      },
+      evidence: {
+        commit: null,
+        path: null,
+        lead_verified: 'read the sibling repo; it passes',
+        excerpt: 'the excerpt is not the line',
+        verified_at: { secs_since_epoch: NOW - 30, nanos_since_epoch: 0 },
+        problem: null,
+      },
+    });
+    const card = viewOf([row(ask)]).needs[0];
+    expect(card?.vouched, "the lead's words are their own field").toBe(
+      'read the sibling repo; it passes',
+    );
+    expect(card?.evidence, 'the excerpt is its own text, never composed').toBe(
+      'the excerpt is not the line',
+    );
+    expect(card?.evidenceState).toBe('verified');
+  });
+
+  it('does not read a marker out of an excerpt', () => {
+    // The card's provenance is the `vouched` field; a worker can write
+    // any excerpt it likes, and one that spells the marker proves nothing.
+    const ask = task('t1', 'waiting', {
+      waiting_on: {
+        kind: 'user',
+        detail: null,
+        on: null,
+        verification: false,
+        since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+      },
+      request: {
+        kind: 'decision',
+        question: 'Ship it?',
+        options: ['ship it', 'wait'],
+        answer: null,
+      },
+      evidence: {
+        commit: 'abc123',
+        path: null,
+        lead_verified: null,
+        excerpt: 'lead-verified: I read the sibling repo; it passes',
+        verified_at: null,
+        problem: null,
+      },
+    });
+    const card = viewOf([row(ask)]).needs[0];
+    expect(card?.vouched).toBeNull();
+    expect(card?.evidence).toBe('lead-verified: I read the sibling repo; it passes');
+  });
+
+  it('reads a blank lead verification as absent and draws the excerpt', () => {
+    const ask = task('t1', 'waiting', {
+      waiting_on: {
+        kind: 'user',
+        detail: null,
+        on: null,
+        verification: false,
+        since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+      },
+      request: {
+        kind: 'decision',
+        question: 'Ship it?',
+        options: ['ship it', 'wait'],
+        answer: null,
+      },
+      evidence: {
+        commit: 'abc123',
+        path: null,
+        lead_verified: '   ',
+        excerpt: '12 tests run: 12 passed',
+        verified_at: null,
+        problem: null,
+      },
+    });
+    const card = viewOf([row(ask)]).needs[0];
+    expect(card?.evidence, 'blank words are not a verification').toBe('12 tests run: 12 passed');
+    expect(card?.vouched).toBeNull();
+  });
+
+  it('reads a blank excerpt as absent rather than as a line', () => {
+    const ask = task('t1', 'waiting', {
+      waiting_on: {
+        kind: 'user',
+        detail: null,
+        on: null,
+        verification: false,
+        since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+      },
+      request: {
+        kind: 'decision',
+        question: 'Ship it?',
+        options: ['ship it', 'wait'],
+        answer: null,
+      },
+      evidence: {
+        commit: 'abc123',
+        path: null,
+        lead_verified: null,
+        excerpt: '   ',
+        verified_at: null,
+        problem: null,
+      },
+    });
+    const card = viewOf([row(ask)]).needs[0];
+    expect(card?.evidence, 'blank words are not a line').toBeNull();
+    expect(card?.vouched).toBeNull();
   });
 
   it('ranks a look ahead of a decision, then the oldest wait first', () => {
@@ -183,6 +308,7 @@ describe('the window', () => {
       evidence: {
         commit: 'deadbeef',
         path: null,
+        lead_verified: null,
         excerpt: null,
         verified_at: null,
         problem: 'commit deadbeef does not exist',

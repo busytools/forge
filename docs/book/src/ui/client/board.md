@@ -138,9 +138,19 @@ the reader's own acts: no agent has a verb for either, so the press that
 writes them is always the person's.
 
 Where a card carries evidence, it is one summary line: the gate's own word
-(`evidence verified`, `evidence unchecked`, `evidence refused`) and the
-bounded excerpt, which `more` expands and `less` folds back. A claim with no
-excerpt still states its word.
+(`evidence verified`, `evidence unchecked`, `evidence refused`) and either
+the bounded excerpt, which `more` expands and `less` folds back, or - when
+the project's lead vouched for an artifact the gate cannot check
+mechanically, like a sibling repository - `lead-verified:` followed by the
+lead's own words. The marker is chrome drawn only from the row's
+`lead_verified` field, never composed into or out of the excerpt, so an
+excerpt that spells the marker proves nothing. The full line always rides
+the title. The expander is drawn when the drawn line is actually clipped at
+the card's width or when an excerpt is folded behind it, and it stays drawn
+while expanded so `less` is reachable; a line that fits with nothing behind
+it carries no control. When a row carries both, the quote is the line and
+the excerpt draws on its own line under it once expanded, rather than being
+dropped. A claim with no excerpt still states its word.
 
 **One action bar per card, and the hierarchy is by shape.** The primary
 actions - `approve` on a look, the option pills on a decision, a

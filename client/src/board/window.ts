@@ -31,7 +31,12 @@ export interface NeedCard {
   options: string[];
   /** A teaching's class: the recurring trouble the lesson settles. */
   class: string | null;
-  /** The bounded excerpt behind the ask, when the row carries one. */
+  /** The project lead's own verification, in words, when the row carries
+   *  it. Provenance is this field, never text inside `evidence`: the
+   *  component draws the marker only when it is set. */
+  vouched: string | null;
+  /** The bounded excerpt text: the line when no quote rides the card, and
+   *  the folded detail when one does. */
   evidence: string | null;
   /** What the gate said about that evidence; `null` for a row with none. */
   evidenceState: 'verified' | 'unchecked' | 'failed' | null;
@@ -246,6 +251,12 @@ function needCardOf(row: BoardRow, rows: BoardRow[], nowSecs: number): NeedCard 
         ? 'This row has no verified evidence behind its completion; move it with an evidence claim first.'
         : null;
   const kind: NeedKind = verification ? 'look' : (request?.kind ?? 'decision');
+  // The lead's own verification is the line when the row carries one: it
+  // is what stands for the artifact the gate could not check. Blank words
+  // are not a verification the server would accept, so they read absent.
+  // The excerpt then folds behind the same `more`, never dropped.
+  const quote = task.evidence?.lead_verified?.trim() ?? '';
+  const excerpt = task.evidence?.excerpt?.trim() ?? '';
   return {
     id: task.id,
     kind,
@@ -253,7 +264,10 @@ function needCardOf(row: BoardRow, rows: BoardRow[], nowSecs: number): NeedCard 
     question,
     options: kind === 'decision' ? (request?.options ?? []) : [],
     class: request?.class ?? null,
-    evidence: task.evidence?.excerpt ?? null,
+    // Provenance is structural: the quote is its own field and the excerpt
+    // stays its own text, so no excerpt can pass itself off as a vouch.
+    vouched: quote === '' ? null : quote,
+    evidence: excerpt === '' ? null : excerpt,
     evidenceState,
     artifact,
     owner: task.owner === null ? null : task.owner.label,

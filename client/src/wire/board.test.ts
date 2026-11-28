@@ -143,6 +143,28 @@ describe('the task fields the board marks', () => {
     expect(wait?.parked, 'the parked flag reached the wait').toBe(true);
   });
 
+  it("carries the lead's verification under its own key", () => {
+    const task = parsedTask({
+      id: 't-3',
+      project_name: 'proj',
+      subject: 'a vouched row',
+      status: 'completed',
+      evidence: {
+        commit: null,
+        path: null,
+        lead_verified: 'read the sibling repo; the five port rows pass',
+        excerpt: 'the excerpt',
+        verified_at: { secs_since_epoch: 1, nanos_since_epoch: 0 },
+        problem: null,
+      },
+    });
+    const evidence = task['evidence'] as { lead_verified?: string } | null;
+    expect(
+      evidence?.lead_verified,
+      "the lead's words cross the wire under `lead_verified`, not folded into the excerpt",
+    ).toBe('read the sibling repo; the five port rows pass');
+  });
+
   it('defaults absent newer fields rather than dropping the row', () => {
     // A payload that states none of the newer fields: no attestation, no
     // reservation, and a wait that is not parked.

@@ -144,6 +144,12 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             serde_json::json!({
                 "commit": evidence.commit,
                 "path": evidence.path,
+                // A block stored before the write seams dropped blank
+                // words reads the way a call states it: no quote at all,
+                // through the one seam that defines a blank quote.
+                "lead_verified": forge_primitives::tasks::lead_verification(
+                    evidence.lead_verified.as_deref()
+                ),
                 "excerpt": evidence.excerpt,
                 // The wire's `verified at`: absent until the gate's check
                 // passed, so an unchecked claim reads as unknown.
@@ -420,13 +426,17 @@ impl Tool for Create {
                     "type": "object",
                     "description": "What the completion will rest on. `commit` is a sha the \
                                     repository must hold; `path` a file that must exist at that \
-                                    commit (or at HEAD when no commit is named). `excerpt` is a \
-                                    bounded output sample for the reader - it is never the claim \
-                                    itself. A row cannot complete without one of the two \
-                                    artifacts.",
+                                    commit (or at HEAD when no commit is named); \
+                                    `lead_verified` is the project lead's own verification, in \
+                                    words, for an artifact the gate cannot check mechanically \
+                                    (a sibling repo, a non-git artifact) - only the lead seat \
+                                    may state it. `excerpt` is a bounded output sample for the \
+                                    reader - it is never the claim itself. A row cannot \
+                                    complete without one of the three claim forms.",
                     "properties": {
                         "commit": { "type": "string" },
                         "path": { "type": "string" },
+                        "lead_verified": { "type": "string" },
                         "excerpt": { "type": "string" },
                     },
                     "additionalProperties": false,
@@ -490,12 +500,20 @@ impl Tool for Update {
          head; for a report or a sweep, concluded means it is handed over. **A move to \
          `completed` needs `evidence`**: a `commit` the repository holds - the commit alone is \
          a claim forge checks - or a `path` at that commit (at HEAD when no commit is named), \
-         with an `excerpt` for the reader. forge checks the claim on the move: a completion \
-         with no evidence, or with evidence the repository cannot back, is refused rather than \
-         landed. Being committed is not the claim; what this move states is. \
+         with an `excerpt` for the reader; or `lead_verified`, the project lead's own \
+         verification in words for an artifact the gate cannot check mechanically (a sibling \
+         repo, a non-git artifact), which only the lead seat may state. forge checks the \
+         claim on the move: a completion with no claim at all is refused, and a commit or \
+         path the repository cannot back is refused rather than landed - a lead's \
+         `lead_verified` stands for an artifact the check cannot reach, so that check does \
+         not run for it. Being committed is not the claim; what this move states is. \
          Any session in the \
          project may move any of its tasks, so a lead can \
-         complete a worker's task and a worker can put a row it holds into waiting - and a row \
+         complete a worker's task and a worker can put a row it holds into waiting - except \
+         that a row whose claim is the project lead's verification (`lead_verified`) completes \
+         only from the lead's seat, or by the user's own approve, and only the lead may \
+         restate that evidence block; a worker asks its lead to complete the row, or to \
+         restate the claim with the artifact. A row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
          it, and a cancel of a row waiting on the user is the withdraw door once the ask has \
          gone moot: it needs `detail`, the reason the ask is withdrawn, which lands on the row, \
@@ -605,13 +623,19 @@ impl Tool for Update {
                     "type": "object",
                     "description": "The completion's claim: `commit` (a sha the repository must \
                                     hold), `path` (a file that must exist at that commit, or at \
-                                    HEAD when no commit is named), and `excerpt` (a bounded \
-                                    sample of the output, for the reader). A move to completed \
-                                    is refused while the claim is missing or does not check \
-                                    out; restating the claim clears its last verdict.",
+                                    HEAD when no commit is named), `lead_verified` (the project \
+                                    lead's own verification, in words, for an artifact the gate \
+                                    cannot check mechanically - a sibling repo, a non-git \
+                                    artifact; only the lead seat may state it, and the \
+                                    mechanical check is skipped when it is present), and \
+                                    `excerpt` (a bounded sample of the output, for the reader). \
+                                    A move to completed is refused while the claim is missing \
+                                    or does not check out; restating the claim clears its last \
+                                    verdict.",
                     "properties": {
                         "commit": { "type": "string" },
                         "path": { "type": "string" },
+                        "lead_verified": { "type": "string" },
                         "excerpt": { "type": "string" },
                     },
                     "additionalProperties": false,
@@ -831,9 +855,15 @@ fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-/// The evidence's own state, in one word: checked and passed, checked and
-/// refused, or not checked at all. Absence of a verdict is `unknown`, never
-/// success.
+/// The board's compact state word: `verified`, `failed` or `unchecked`.
+/// `verified` covers both what the stamp covers - a passed check of the
+/// artifact, and the project lead's word for one the check cannot reach -
+/// because a lead-vouched completion is stamped like any other. `failed`
+/// is unreachable unless the store is hand-edited: a refusal refuses the
+/// move and never lands on the row, so a live row reads `verified` or
+/// `unchecked`. Which form verified it is on the block, and the block
+/// reaches the detail read and the socket's board rows - the compact list
+/// and its `tasks__list` answer carry this word alone.
 fn evidence_state(evidence: &forge_primitives::tasks::Evidence) -> &'static str {
     match (&evidence.verified_at, &evidence.problem) {
         (Some(_), _) => "verified",
@@ -1426,10 +1456,11 @@ impl Tool for Approve {
          The user's own approve, send-back and cancel doors stay; the user's reopen strikes \
          the attestation, re-mints the look gate and parks the row on them again. A task is \
          named by its full id or any unique prefix of one. Refused when the row is not \
-         waiting on a look, when the quote is empty, when the version you named is stale, when \
-         the caller is not the lead, or when the completion's evidence does not check out \
-         against the repository - the same gate every completion runs, because the approve IS \
-         a completion."
+         waiting on a look, when the quote is empty, when the version you named is stale, or \
+         when the caller is not the lead. The approve is a completion, so it runs the same \
+         evidence gate: a commit or path the repository cannot back is refused, while a row \
+         carrying the lead's `lead_verified` approves on that word without a repository \
+         check."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -2827,6 +2858,7 @@ mod tests {
         row.task.evidence = Some(forge_primitives::tasks::Evidence {
             commit: Some("abc123".to_owned()),
             path: None,
+            lead_verified: Some("read the sibling repo; it holds".to_owned()),
             excerpt: None,
             verified_at: Some(SystemTime::UNIX_EPOCH),
             problem: None,
@@ -3105,6 +3137,10 @@ mod tests {
         assert_eq!(json["id"], "t-1");
         assert_eq!(json["detail"], "why", "the brief is the detail verb's");
         assert_eq!(json["evidence"]["verified_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(
+            json["evidence"]["lead_verified"], "read the sibling repo; it holds",
+            "the detail carries the lead's verification under its own key",
+        );
         assert_eq!(json["history"], serde_json::json!([]));
         assert_eq!(json["history_total"], 0);
         assert_eq!(json["marks"], serde_json::json!(["in_review", "overdue"]));
@@ -3113,6 +3149,28 @@ mod tests {
         assert_eq!(json["links"][0]["target"], "https://example.invalid/pull/9");
         assert_eq!(json["links"][0]["kind"], "pr");
         assert_eq!(json["archived_at"], "1970-01-01T00:00:00Z");
+    }
+
+    /// A block stored before the write seams dropped blank words reads as
+    /// no quote at all - the read boundary normalizes rather than
+    /// forwarding a legacy blank.
+    #[tokio::test]
+    async fn the_detail_read_normalizes_a_stored_blank_quote() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let mut row = populated_row();
+        if let Some(evidence) = row.task.evidence.as_mut() {
+            evidence.lead_verified = Some("  \t ".to_owned());
+        }
+        facade.rows.lock().push(row);
+        let out =
+            Get { facade, slot: lead_slot() }.call(input(serde_json::json!({ "id": "t-1" }))).await;
+        assert!(!out.is_error, "get succeeds: {out:?}");
+        let json: serde_json::Value = serde_json::from_str(text_of(&out)).expect("the row is json");
+        assert_eq!(
+            json["evidence"]["lead_verified"],
+            serde_json::Value::Null,
+            "a blank stored quote reads as no quote",
+        );
     }
 
     /// The answer verb threads the user's choice and note to the core and
@@ -3290,6 +3348,7 @@ mod tests {
         row.task.evidence = Some(forge_primitives::tasks::Evidence {
             commit: Some("abc123".to_owned()),
             path: None,
+            lead_verified: None,
             excerpt: None,
             verified_at: Some(SystemTime::UNIX_EPOCH),
             problem: None,

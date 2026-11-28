@@ -14,8 +14,8 @@ use std::time::{Duration, SystemTime};
 use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{
     Answer, AnswerValue, AskKind, Attestation, By, ChaseRung, Deadline, DefaultIfIgnored,
-    Disposition, LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting,
-    WaitingKind,
+    Disposition, Evidence, LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition,
+    Waiting, WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -117,9 +117,29 @@ pub(crate) enum MoveError {
     /// A completion claim carries no evidence at all: absence is never
     /// success, so there is nothing for forge to check.
     EvidenceMissing,
+    /// The same absence on the project lead's own move. The refusal names
+    /// `lead_verified` and the stale-catalogue respawn: a session resumed
+    /// from before the field existed drops it before forge sees it, so a
+    /// lead who stated it hears why it never arrived.
+    EvidenceMissingLead,
     /// The evidence names an artifact the project's repository does not
     /// hold, or the check could not run. The reason is the check's own.
     EvidenceUnverified(String),
+    /// A completion moved by the project's own lead failed the artifact
+    /// check. The refusal carries a conditional stale-catalogue hint: a
+    /// session resumed from before `lead_verified` existed keeps its
+    /// spawn-time tool schema, so a stated field can be dropped before
+    /// forge sees it. The reason is the check's own, and it leads.
+    EvidenceUnverifiedLead(String),
+    /// A row whose claim is the project lead's verification was moved by
+    /// a session that is not the project's lead: only the lead may
+    /// complete it, or the user's own approve.
+    LeadVerificationLeadOnly,
+    /// A seat that is not the project's lead would change an evidence
+    /// block carrying the lead's verification: only the lead restates
+    /// that claim, and the rule rides the one commit path so no door can
+    /// replace it.
+    LeadVerificationRestate,
     /// An update named a version the row is not at: another writer got
     /// there first, and the caller is reading a stale record.
     VersionMismatch { expected: u64, current: u64 },
@@ -185,6 +205,24 @@ pub(crate) fn default_user_deadline(at: SystemTime) -> Deadline {
 fn parked_on_look(task: &Task) -> bool {
     task.verify == Some(Verify::User)
         && task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+}
+
+/// Whether `by` is the project's own lead seat: the one seat that may
+/// stand behind an artifact the mechanical check cannot reach. Project
+/// names are unique across orgs - `forge.toml` keys a project by the
+/// name - so the name is the whole comparison. A lead of another
+/// project is not this project's lead.
+fn moved_by_project_lead(by: &By, project_name: &str) -> bool {
+    matches!(by, By::Seat(slot) if slot.is_lead() && slot.project() == project_name)
+}
+
+/// Whether an evidence block carries the project lead's verification,
+/// read through the one seam that defines a blank quote as no claim.
+fn carries_lead_verification(evidence: Option<&Evidence>) -> bool {
+    forge_primitives::tasks::lead_verification(
+        evidence.and_then(|evidence| evidence.lead_verified.as_deref()),
+    )
+    .is_some()
 }
 
 /// Whether a row presents as waiting on the user: an ask on the user or a
@@ -423,6 +461,35 @@ impl std::fmt::Display for MoveError {
                 f,
                 "the completion's evidence did not verify: {reason}. Fix the artifact or the \
                  evidence and move the row again"
+            ),
+            Self::EvidenceMissingLead => write!(
+                f,
+                "this row names no evidence for its completion; state `evidence` with the \
+                 commit (sha), the path the work left, or `lead_verified`, your own \
+                 verification of an artifact the repository check cannot reach. If you meant \
+                 to state `lead_verified`, a session spawned before that field existed \
+                 carries its spawn-time tool schema and drops it, resumed or not: have the \
+                 user restart the session so it picks up the new schema, then state it and \
+                 move the row again"
+            ),
+            Self::EvidenceUnverifiedLead(reason) => write!(
+                f,
+                "the completion's evidence did not verify: {reason}. Fix the artifact or the \
+                 evidence and move the row again. If you meant to state `lead_verified`, a \
+                 session spawned before that field existed carries its spawn-time tool \
+                 schema and drops it, resumed or not: have the user restart the session so \
+                 it picks up the new schema, then state it and move the row again"
+            ),
+            Self::LeadVerificationLeadOnly => write!(
+                f,
+                "this row's claim is the project lead's verification; only the lead may \
+                 complete it. Ask your lead to complete it, or to restate the claim with the \
+                 artifact"
+            ),
+            Self::LeadVerificationRestate => write!(
+                f,
+                "this row's claim is the project lead's verification, and only the lead may \
+                 restate it; ask your lead to restate the claim with the artifact"
             ),
             Self::VersionMismatch { expected, current } => write!(
                 f,
@@ -726,6 +793,20 @@ impl Workspace {
             let prior = next.status;
             f(&mut next)?;
 
+            // A row whose claim is the project lead's verification keeps
+            // it: only the lead restates that block. The rule rides the
+            // one commit path - on the row this lock resolved, so a
+            // stated prefix cannot slip past it - and runs before the
+            // gate stamps anything. The user's own moves are the person,
+            // not a seat restating a claim, so only a non-lead seat is
+            // refused.
+            if !moved_by_project_lead(&by, project_name)
+                && !matches!(by, By::User)
+                && carries_lead_verification(tasks[index].evidence.as_ref())
+                && next.evidence != tasks[index].evidence
+            {
+                return Err(MoveError::LeadVerificationRestate);
+            }
             // The look gate is the user's to clear: an update that would
             // clear a row's own gate is refused by name.
             if gate
@@ -757,11 +838,16 @@ impl Workspace {
             }
             // The evidence gate: a claim of completion rests on an artifact
             // forge checks on this move, and a claim with nothing to check
-            // refuses. It fires before the look gate parks a verify=user
-            // row, so a park carries verified evidence for the approve
-            // that follows.
-            if next.status == TaskStatus::Completed {
-                self.verify_completion_evidence(project_name, &mut next)?;
+            // refuses. It fires on a move INTO completed, or one that
+            // restates the claim - an ordinary edit of a row already
+            // completed is not a completion claim, and re-checking one
+            // would refuse a worker's detail fix on a vouched row. It
+            // fires before the look gate parks a verify=user row, so a
+            // park carries verified evidence for the approve that follows.
+            if next.status == TaskStatus::Completed
+                && (prior != TaskStatus::Completed || next.evidence != tasks[index].evidence)
+            {
+                self.verify_completion_evidence(project_name, &mut next, &by)?;
             }
             // A move off `waiting` drops the wait the row was holding.
             if prior == TaskStatus::Waiting && next.status != TaskStatus::Waiting {
@@ -916,41 +1002,95 @@ impl Workspace {
         Ok(Some(task))
     }
 
-    /// Check a completion's claim on the move that lands it: the artifact
-    /// must exist in the project's repository, and the row keeps the stamp
-    /// of that check. A claim naming nothing refuses, and a failed check
-    /// refuses with the reason it found.
+    /// Check a completion's claim on the move that lands it: a commit or a
+    /// path must exist in the project's repository, and the row keeps the
+    /// stamp of that check. A claim naming nothing refuses, and a failed
+    /// check refuses with the reason it found.
+    ///
+    /// `lead_verified` is a claim form of its own: when it carries words,
+    /// the project's lead (or the user's own approve) may land the
+    /// completion and the mechanical check is skipped - the lead's word
+    /// stands for an artifact the gate cannot reach, so the repository
+    /// check does not run for that move. A worker cannot vouch for its own
+    /// artifact.
     pub(crate) fn verify_completion_evidence(
         &self,
         project_name: &str,
         task: &mut Task,
+        by: &By,
     ) -> Result<(), MoveError> {
+        let lead = moved_by_project_lead(by, project_name);
         let Some(evidence) = task.evidence.as_mut() else {
-            return Err(MoveError::EvidenceMissing);
+            // A row with no block at all is the same absence as an empty
+            // one, and the lead hears the same thing: the field it stated
+            // can be dropped before forge sees it.
+            return Err(if lead {
+                MoveError::EvidenceMissingLead
+            } else {
+                MoveError::EvidenceMissing
+            });
         };
-        let commit = evidence.commit.as_deref().map(str::trim).filter(|value| !value.is_empty());
-        let path = evidence.path.as_deref().map(str::trim).filter(|value| !value.is_empty());
-        if commit.is_none() && path.is_none() {
-            return Err(MoveError::EvidenceMissing);
-        }
-        let repo = self
-            .list_projects()
-            .into_iter()
-            .find(|view| view.name == project_name)
-            .map(|view| view.path)
-            .ok_or_else(|| {
-                MoveError::EvidenceUnverified(format!(
-                    "no project named {project_name} is loaded, so there is no repository to \
-                     check the claim against"
-                ))
-            })?;
-        let verifier = std::sync::Arc::clone(&self.evidence_verifier.read());
-        match verifier.verify(&repo, commit, path) {
-            Ok(()) => {
-                evidence.verified_at = Some(SystemTime::now());
-                evidence.problem = None;
+        // A blank quote is no claim at all: the write seams drop it, and
+        // a stored one reads the same here rather than failing
+        // differently. The one seam reads it, the trimmed words are what
+        // the block keeps.
+        evidence.lead_verified =
+            forge_primitives::tasks::lead_verification(evidence.lead_verified.as_deref())
+                .map(str::to_owned);
+        if evidence.lead_verified.is_some() {
+            // The user's own approve is the verification its gate waits
+            // on, so it needs no seat; the lead's word is the seat's to
+            // give.
+            if !lead && !matches!(by, By::User) {
+                return Err(MoveError::LeadVerificationLeadOnly);
             }
-            Err(reason) => return Err(MoveError::EvidenceUnverified(reason)),
+            evidence.verified_at = Some(SystemTime::now());
+            evidence.problem = None;
+        } else {
+            let commit =
+                evidence.commit.as_deref().map(str::trim).filter(|value| !value.is_empty());
+            let path = evidence.path.as_deref().map(str::trim).filter(|value| !value.is_empty());
+            if commit.is_none() && path.is_none() {
+                // The lead's own missing claim names `lead_verified` and
+                // the respawn: the field can be dropped before forge sees
+                // it, and "state the commit or the path" cannot work for
+                // a sibling-repo artifact.
+                return Err(if lead {
+                    MoveError::EvidenceMissingLead
+                } else {
+                    MoveError::EvidenceMissing
+                });
+            }
+            // The lead's own failure carries the stale-catalogue hint: a
+            // session resumed from before `lead_verified` existed drops
+            // the field before forge sees it, and would otherwise read a
+            // plain missing-artifact refusal.
+            let refused = |reason: String| {
+                if lead {
+                    MoveError::EvidenceUnverifiedLead(reason)
+                } else {
+                    MoveError::EvidenceUnverified(reason)
+                }
+            };
+            let repo = self
+                .list_projects()
+                .into_iter()
+                .find(|view| view.name == project_name)
+                .map(|view| view.path)
+                .ok_or_else(|| {
+                    refused(format!(
+                        "no project named {project_name} is loaded, so there is no repository to \
+                         check the claim against"
+                    ))
+                })?;
+            let verifier = std::sync::Arc::clone(&self.evidence_verifier.read());
+            match verifier.verify(&repo, commit, path) {
+                Ok(()) => {
+                    evidence.verified_at = Some(SystemTime::now());
+                    evidence.problem = None;
+                }
+                Err(reason) => return Err(refused(reason)),
+            }
         }
         // A project that opted into a connector also waits on its pull
         // requests: the head and CI the connector reports are the claim's
@@ -2774,6 +2914,7 @@ mod tests {
         Some(forge_primitives::tasks::Evidence {
             commit: Some("test-commit".to_owned()),
             path: None,
+            lead_verified: None,
             excerpt: None,
             verified_at: None,
             problem: None,
@@ -5871,6 +6012,7 @@ mod tests {
             evidence: Some(Evidence {
                 commit: None,
                 path: None,
+                lead_verified: None,
                 excerpt: Some("looks fine to me".to_owned()),
                 verified_at: None,
                 problem: None,
@@ -6193,6 +6335,555 @@ mod tests {
             ),
             "an expired check is refused",
         );
+    }
+
+    /// A real git repository at `path` holding one commit, its head
+    /// returned. The sibling-repo case is the field's whole reason, so
+    /// the test drives git itself rather than a verifier that answers
+    /// what the test says.
+    fn repo_with_commit(path: &std::path::Path, words: &str) -> String {
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(path)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "forge")
+                .env("GIT_AUTHOR_EMAIL", "forge@example.invalid")
+                .env("GIT_COMMITTER_NAME", "forge")
+                .env("GIT_COMMITTER_EMAIL", "forge@example.invalid")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        std::fs::create_dir_all(path).expect("mkdir");
+        run(&["init", "-q"]);
+        std::fs::write(path.join("done.txt"), words).expect("write");
+        run(&["add", "."]);
+        run(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", words]);
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("git runs");
+        String::from_utf8(out.stdout).expect("utf8").trim().to_owned()
+    }
+
+    /// Work whose artifact lives in a sibling repository cannot complete
+    /// a row through the mechanical check, and the project's lead is the
+    /// one seat that can vouch for it. A real repository backs both
+    /// halves: the commit exists, just not in the project's own repo.
+    ///
+    /// Mutant: accept `lead_verified` from any seat - the worker test
+    /// beside this one is what catches it - or keep the mechanical check
+    /// running when the lead has vouched, which fails here because the
+    /// project repo does not hold the sibling's commit.
+    #[test]
+    fn a_project_lead_vouches_for_a_sibling_repositories_artifact() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let project_repo = dir.path().join("project");
+        let project_head = repo_with_commit(&project_repo, "project work");
+        ws.seed_test_project("proj", project_repo.to_str().expect("utf8 path"));
+        ws.install_evidence_verifier(std::sync::Arc::new(crate::env::evidence::GitEvidence));
+        let sibling_commit = repo_with_commit(&dir.path().join("sibling"), "sibling work");
+        // The premise the test rests on: the project's repository really
+        // does not hold the sibling's commit. An inherited GIT_DIR or an
+        // alternates file would make the mechanical check pass and let
+        // the mutant the test guards against walk through.
+        assert_ne!(project_head, sibling_commit, "the two repositories' heads differ");
+        let spec = format!("{sibling_commit}^{{commit}}");
+        let lookup = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&project_repo)
+            .args(["cat-file", "-e", &spec])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git runs");
+        assert!(!lookup.success(), "the project repo must not hold the sibling's commit");
+
+        let quote = "read the sibling repo at this sha: the five port rows pass";
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: Some(sibling_commit),
+                path: None,
+                lead_verified: Some(quote.to_owned()),
+                excerpt: None,
+                verified_at: None,
+                // A prior refusal rides the block: the lead's word is
+                // what clears it.
+                problem: Some("commit deadbeef is not in the project repo".to_owned()),
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let done = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect("the lead's word is the verification")
+            .expect("the row is there");
+        assert_eq!(done.status, TaskStatus::Completed);
+        let evidence = done.evidence.expect("the claim rides the row");
+        assert!(evidence.verified_at.is_some(), "the lead's check is stamped like any other");
+        assert_eq!(evidence.problem, None, "the lead's word clears the last refusal");
+        assert_eq!(evidence.lead_verified.as_deref(), Some(quote), "the quote stays on the block");
+    }
+
+    /// Vouching is the lead's own act: a worker stating `lead_verified` is
+    /// refused, and so is another project's lead. The refusal names the
+    /// rule, and the row does not move. The artifact named here EXISTS in
+    /// the project repo, so a guard that ran after the mechanical check
+    /// would let the worker's move land - the seat is consulted first.
+    #[test]
+    fn only_the_projects_lead_may_vouch_for_an_artifact() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let project_repo = dir.path().join("project");
+        let project_head = repo_with_commit(&project_repo, "project work");
+        ws.seed_test_project("proj", project_repo.to_str().expect("utf8 path"));
+        ws.install_evidence_verifier(std::sync::Arc::new(crate::env::evidence::GitEvidence));
+        let quote = "read the sibling repo at this sha";
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: Some(project_head),
+                path: None,
+                lead_verified: Some(quote.to_owned()),
+                ..passing_evidence().expect("a sample claim")
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(worker), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("a worker cannot vouch for its own artifact");
+        assert_eq!(refused, MoveError::LeadVerificationLeadOnly);
+        assert!(
+            refused.to_string().contains("only the lead may complete it"),
+            "the refusal says whose completion it is: {refused}",
+        );
+
+        let foreign_lead = SessionSlot::lead("TestOrg", "other");
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-1"), By::Seat(foreign_lead), |task| {
+                task.status = TaskStatus::Completed;
+            }),
+            Err(MoveError::LeadVerificationLeadOnly),
+            "a lead of another project is not this project's lead",
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Pending,
+            "the row did not move",
+        );
+    }
+
+    /// A row whose claim is the lead's word keeps it: a worker's evidence
+    /// replacement is refused by the move's own rule, on the row its lock
+    /// resolved, so a stated prefix cannot slip past; the lead restates
+    /// freely.
+    #[test]
+    fn only_the_lead_may_restate_a_vouched_claim() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-vouch-restate");
+        let quote = "read the sibling repo; it holds";
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                lead_verified: Some(quote.to_owned()),
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+        let restated = |task: &mut Task| {
+            task.evidence = Some(Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                lead_verified: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            });
+        };
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-1"), By::Seat(worker.clone()), restated),
+            Err(MoveError::LeadVerificationRestate),
+            "a worker cannot draw the lead's word away",
+        );
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-"), By::Seat(worker), restated),
+            Err(MoveError::LeadVerificationRestate),
+            "a stated prefix resolves to the same row before the rule reads it",
+        );
+        let stored = ws.tasks_for_project("proj");
+        assert_eq!(
+            stored[0].evidence.as_ref().and_then(|evidence| evidence.lead_verified.as_deref()),
+            Some(quote),
+            "the claim the row carried is still there",
+        );
+
+        ws.update_task(
+            "proj",
+            &TaskId::from("t-1"),
+            By::Seat(SessionSlot::lead("TestOrg", "proj")),
+            restated,
+        )
+        .expect("the lead restates freely");
+    }
+
+    /// The lead's word is a claim form of its own: no commit and no path,
+    /// and the mechanical check - which would find nothing - never runs.
+    #[test]
+    fn the_lead_verification_alone_completes_a_row() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let project_repo = dir.path().join("project");
+        std::fs::create_dir_all(&project_repo).expect("mkdir");
+        ws.seed_test_project("proj", project_repo.to_str().expect("utf8 path"));
+        ws.install_evidence_verifier(std::sync::Arc::new(crate::env::evidence::GitEvidence));
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                lead_verified: Some("I read the report; it holds".to_owned()),
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let done = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect("the lead's word needs no artifact")
+            .expect("the row is there");
+        assert_eq!(done.status, TaskStatus::Completed);
+        assert!(
+            done.evidence.as_ref().is_some_and(|evidence| evidence.verified_at.is_some()),
+            "the lead's check is stamped like any other",
+        );
+    }
+
+    /// The absent field changes nothing for a worker, and the lead's own
+    /// failure carries the stale-catalogue hint: a session resumed from
+    /// before the field existed drops it, and would otherwise read a plain
+    /// missing-commit refusal with no way to learn why.
+    #[test]
+    fn the_leads_failed_check_carries_the_stale_catalogue_hint() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let project_repo = dir.path().join("project");
+        std::fs::create_dir_all(&project_repo).expect("mkdir");
+        ws.seed_test_project("proj", project_repo.to_str().expect("utf8 path"));
+        ws.install_evidence_verifier(std::sync::Arc::new(crate::env::evidence::GitEvidence));
+        ws.push_task(sample_task("t-1", "proj"));
+
+        let refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("the project repo does not hold the claim");
+        assert!(
+            matches!(&refused, MoveError::EvidenceUnverifiedLead(reason)
+                if reason.contains("test-commit")),
+            "the lead's refusal carries the check's own reason: {refused}",
+        );
+        let said = refused.to_string();
+        assert!(
+            said.contains("the completion's evidence did not verify: commit test-commit"),
+            "today's text is unchanged: {said}",
+        );
+        assert!(
+            said.contains("If you meant to state `lead_verified`")
+                && said.contains("have the user restart the session"),
+            "the lead's refusal ends with the conditional stale-catalogue hint: {said}",
+        );
+
+        let worker_refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::worker("TestOrg", "proj", "w-1")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("a worker's claim fails the same check");
+        assert!(
+            matches!(&worker_refused, MoveError::EvidenceUnverified(_)),
+            "a worker's refusal keeps today's variant: {worker_refused}",
+        );
+        assert!(
+            !worker_refused.to_string().contains("lead_verified"),
+            "a worker's refusal does not carry the hint: {worker_refused}",
+        );
+    }
+
+    /// A quote-only claim whose field was dropped arrives as NO claim at
+    /// all, in any of the three shapes: no block, a block naming nothing,
+    /// and a block whose quote is blank (the write seams drop blank
+    /// words, so a stored one reads the same). The lead's own refusal has
+    /// to name `lead_verified` and the respawn - "state the commit or the
+    /// path" cannot work for a sibling-repo artifact, which is the case
+    /// this exists for.
+    #[test]
+    fn a_lead_whose_quote_was_dropped_is_told_about_the_field() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-vouch-dropped");
+        ws.push_task(Task { evidence: None, ..sample_task("t-absent", "proj") });
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                lead_verified: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-empty", "proj")
+        });
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                lead_verified: Some("   ".to_owned()),
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-blank", "proj")
+        });
+
+        for id in ["t-absent", "t-empty", "t-blank"] {
+            let refused = ws
+                .update_task(
+                    "proj",
+                    &TaskId::from(id),
+                    By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                    |task| {
+                        task.status = TaskStatus::Completed;
+                    },
+                )
+                .expect_err("there is nothing to check");
+            assert_eq!(refused, MoveError::EvidenceMissingLead, "the shape of {id}");
+            let said = refused.to_string();
+            assert!(
+                said.contains("`lead_verified`")
+                    && said.contains("have the user restart the session"),
+                "the lead hears the field and the restart it needs on {id}: {said}",
+            );
+        }
+
+        let worker_refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-empty"),
+                By::Seat(SessionSlot::worker("TestOrg", "proj", "w-1")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("the same absence, from a worker");
+        assert_eq!(
+            worker_refused,
+            MoveError::EvidenceMissing,
+            "a worker's refusal keeps today's text",
+        );
+        assert!(
+            !worker_refused.to_string().contains("lead_verified"),
+            "and does not carry the lead's hint: {worker_refused}",
+        );
+    }
+
+    /// The lead's word stands for the artifact, never for the connector: a
+    /// project that opted into one still waits on its pull requests, so a
+    /// lead-vouched completion with an unchecked link is refused.
+    #[test]
+    fn a_lead_vouched_completion_still_waits_on_the_connector() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-vouch-connector",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(std::sync::Arc::new(crate::env::evidence::GitEvidence));
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link("https://example.invalid/pull/7"));
+        row.evidence = Some(Evidence {
+            commit: None,
+            path: None,
+            lead_verified: Some("read the sibling repo; the port rows pass".to_owned()),
+            excerpt: None,
+            verified_at: None,
+            problem: None,
+        });
+        ws.push_task(row);
+
+        let refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("the connector has not seen the pull request");
+        assert!(
+            matches!(&refused, MoveError::EvidenceUnverified(reason)
+                if reason.contains("connector") && reason.contains("pull/7")),
+            "the connector's half runs behind the lead's word: {refused}",
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Pending,
+            "the row did not move",
+        );
+    }
+
+    /// An ordinary edit of a row already completed is not a completion
+    /// claim: a worker fixing the detail of a vouched row lands, and the
+    /// claim the row carries is untouched.
+    #[test]
+    fn an_ordinary_edit_of_a_completed_vouched_row_lands() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-vouch-edit");
+        let quote = "read the sibling repo; it holds";
+        ws.push_task(Task {
+            status: TaskStatus::Completed,
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                lead_verified: Some(quote.to_owned()),
+                excerpt: None,
+                verified_at: Some(SystemTime::now()),
+                problem: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let edited = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::worker("TestOrg", "proj", "w-1")),
+                |task| {
+                    task.detail = Some("the port rows, annotated".to_owned());
+                },
+            )
+            .expect("an ordinary edit is not a completion claim")
+            .expect("the row is there");
+        assert_eq!(edited.status, TaskStatus::Completed);
+        assert_eq!(edited.detail.as_deref(), Some("the port rows, annotated"));
+        assert_eq!(
+            edited.evidence.as_ref().and_then(|evidence| evidence.lead_verified.as_deref()),
+            Some(quote),
+            "the claim the row carried is untouched",
+        );
+    }
+
+    /// The same for an artifact row: a detail edit is not re-checked, so
+    /// a verifier that would refuse proves the gate did not run.
+    #[test]
+    fn an_ordinary_edit_of_a_completed_row_does_not_recheck_the_artifact() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-edit-artifact");
+        ws.install_evidence_verifier(FixedVerifier::refusing("the artifact moved"));
+        ws.push_task(Task { status: TaskStatus::Completed, ..sample_task("t-1", "proj") });
+
+        let edited = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::worker("TestOrg", "proj", "w-1")),
+                |task| {
+                    task.detail = Some("annotated".to_owned());
+                },
+            )
+            .expect("a detail edit skips the evidence gate")
+            .expect("the row is there");
+        assert_eq!(edited.detail.as_deref(), Some("annotated"));
+    }
+
+    /// The lead's verification lets a gated row park for the look; it
+    /// never stands in for the look. The user's own approve completes it,
+    /// and the quote stays on the block.
+    #[test]
+    fn a_lead_vouched_look_still_waits_for_the_users_approve() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-vouch-look");
+        let quote = "I read the sibling repo; the report holds";
+        let mut row = sample_task("t-1", "proj");
+        row.verify = Some(Verify::User);
+        row.evidence = Some(Evidence {
+            commit: None,
+            path: None,
+            lead_verified: Some(quote.to_owned()),
+            excerpt: None,
+            verified_at: None,
+            problem: None,
+        });
+        ws.push_task(row);
+
+        let parked = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect("the lead's word is the verification")
+            .expect("the row is there");
+        assert_eq!(parked.status, TaskStatus::Waiting, "the look is not bypassed");
+        assert!(
+            parked.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "it waits on the user's look",
+        );
+
+        let approved = ws
+            .approve_task("proj", &TaskId::from("t-1"))
+            .expect("the user's approve is its own verification")
+            .expect("the row is there");
+        assert_eq!(approved.status, TaskStatus::Completed, "the approve completes it");
+        let evidence = approved.evidence.expect("the claim rides the row");
+        assert_eq!(evidence.lead_verified.as_deref(), Some(quote), "the quote stays");
+        assert!(evidence.verified_at.is_some(), "the approve re-stamps the check");
     }
 
     /// The default is off: a project with no connector refreshes nothing,
