@@ -62,7 +62,8 @@ use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
 use forge_server::transport::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use forge_server::transport::wire::{
-    OutdatedReasonWire, ReviewedThreadWire, StreamVersion, ThreadResolutionWire, TurnWire,
+    ArchivedWire, OutdatedReasonWire, ProjectArchivedWire, ProjectIdentity, ReviewedThreadWire,
+    StreamVersion, ThreadResolutionWire, TurnWire,
 };
 use forge_server::{Command, SessionUpdate};
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_baseline_from};
@@ -1866,6 +1867,47 @@ fn frames_record() -> Value {
                 "../../forge-server/tests/wire_fixtures/board.json"
             ))
             .expect("the board fixture parses"),
+        }),
+    );
+    // **The archived read, built from the server's own types.** Its rows are
+    // whole `Task`s, unlike the board's window rows, so the client's shelf
+    // reads field names this record pins: a rename here is a drawer that
+    // draws blank. One row of each shape-bearing member rides the sample; an
+    // empty list pins nothing.
+    payload_sampled.insert(
+        "SnapshotArchived".to_owned(),
+        shape_of(&ServerMessage::Snapshot {
+            subject: Subject::Archived,
+            version: StreamVersion(1),
+            data: serde_json::to_value(ArchivedWire {
+                projects: vec![ProjectArchivedWire {
+                    project: ProjectIdentity { org: "TestOrg".to_owned(), name: "proj".to_owned() },
+                    rows: vec![
+                        serde_json::from_value::<forge_primitives::tasks::Task>(json!({
+                            "id": "t-archived",
+                            "project_name": "proj",
+                            "subject": "a closed row",
+                            "status": "completed",
+                            "owner": { "org": "TestOrg", "project": "proj", "label": "lead" },
+                            "links": [{
+                                "kind": "pr",
+                                "label": "the change",
+                                "target": "https://example.test/pr/1",
+                                "state": "merged",
+                                "last_check": null,
+                                "added_at": { "secs_since_epoch": 1, "nanos_since_epoch": 0 }
+                            }],
+                            "version": 2,
+                            "archived_at": { "secs_since_epoch": 5, "nanos_since_epoch": 0 },
+                            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+                            "updated_at": { "secs_since_epoch": 4, "nanos_since_epoch": 0 }
+                        }))
+                        .expect("the archived sample row decodes against the Task type"),
+                    ],
+                }],
+                refused: None,
+            })
+            .expect("the archived read encodes"),
         }),
     );
     // **The extensions read, built from the server's own types** so a field

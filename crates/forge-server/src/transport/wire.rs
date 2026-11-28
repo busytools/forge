@@ -285,11 +285,13 @@ pub struct ProjectBoardWire {
     /// worked time, ages, whether the owner is live, and the marks.
     ///
     /// **The bulk read carries only the window's fields.** A row's `detail`
-    /// brief and its transition history load on demand (`tasks__get`), so a
-    /// board read is bounded by its row count rather than by how much each
-    /// row has accumulated. The client advances the time-derived figures
-    /// from each row's timestamps and the read's own instant
-    /// (`client/src/board/clock.ts`) - a watched board ticks with no read.
+    /// brief and its transition history load on demand (`tasks__get`), so the
+    /// wire is bounded by its row count rather than by how much each row has
+    /// accumulated. The server still folds each row's whole history when it
+    /// builds the board; the trim is the wire's, not the store's. The client
+    /// advances the time-derived figures from each row's timestamps and the
+    /// read's own instant (`client/src/board/clock.ts`) - a watched board
+    /// ticks with no read.
     pub rows: Vec<Value>,
     /// The schedules this project holds.
     ///
@@ -3640,7 +3642,7 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
         Subject::Session(_) | Subject::DictateModels | Subject::Extensions => {
             whole_fields(old, new)
         }
-        // **Two subjects have no patch, for their own reasons.**
+        // **Three subjects have no patch, for their own reasons.**
         //
         // A take is not a record: its frames are the deltas, and a subscribe
         // is answered with nothing to keep.
@@ -3650,10 +3652,11 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
         // subscription is one scan on the ask and its version never moves. A
         // patch type for it would be dead code, which is why there is none.
         //
-        // **The closed view re-reads rather than patching**: its frame is a
-        // task write, which says the archive may have moved but not what it
-        // now holds, so the subscribed page asks again rather than drawing a
-        // patch this server never computed.
+        // **The closed view is read once per opening of its toggle.** The
+        // page asks when the toggle opens and releases the subject with the
+        // answer, so nothing stays subscribed to patch; a task write reaches
+        // that reader through the board's own store, and the next opening
+        // reads the shelf again.
         Subject::Dictate | Subject::Usage | Subject::Archived => None,
     }
 }
@@ -3677,7 +3680,7 @@ const SEAT_PATCH_FIELDS: &[&str] =
 /// record per connection buys nothing but megabytes - the conversation and the
 /// file index are never patched, and a large seat is tens of megabytes held
 /// once per connection that reads it. The other subjects' whole-field patches
-/// can carry any field, so their projection is the record itself; the two
+/// can carry any field, so their projection is the record itself; the three
 /// subjects with no patch at all project to null and their base costs nothing.
 pub(crate) fn patch_projection(subject: &Subject, record: &Value) -> Value {
     match subject {
@@ -3693,7 +3696,7 @@ pub(crate) fn patch_projection(subject: &Subject, record: &Value) -> Value {
             }
             Value::Object(projected)
         }
-        Subject::Dictate | Subject::Usage => Value::Null,
+        Subject::Dictate | Subject::Usage | Subject::Archived => Value::Null,
         _ => record.clone(),
     }
 }
@@ -3961,15 +3964,16 @@ mod patches {
                             board: ProjectBoardPatch {
                                 rows: Some(
                                     rows.into_iter()
-                                        .filter_map(|row| {
+                                        .map(|row| {
+                                            // **A row with no id is a sample fault, not
+                                            // an empty board**: dropping it here would
+                                            // let the compile-proof pass on zero rows.
                                             let id = row
                                                 .get("task")
                                                 .and_then(|task| task.get("id"))
-                                                .and_then(Value::as_str)?;
-                                            Some(PatchEntry::Set {
-                                                id: TaskId::from(id),
-                                                record: row,
-                                            })
+                                                .and_then(Value::as_str)
+                                                .expect("a sampled board row carries its task id");
+                                            PatchEntry::Set { id: TaskId::from(id), record: row }
                                         })
                                         .collect(),
                                 ),
@@ -4118,7 +4122,9 @@ mod patches {
                 Subject::DictateModels => "dictate models patch",
                 Subject::Extensions => "extensions patch",
                 Subject::Dictate => "no record: its own frames are the deltas",
-                Subject::Archived => "no patch: a task write re-reads the closed view",
+                Subject::Archived => {
+                    "no patch: read once per opening, and nothing stays subscribed"
+                }
             }
         }
         let _: fn(&Subject) -> &'static str = carries;

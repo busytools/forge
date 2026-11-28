@@ -1170,6 +1170,78 @@
         "project"
       ]
     },
+    "SnapshotArchived": {
+      "": [
+        "data",
+        "kind",
+        "subject",
+        "version"
+      ],
+      "/data": [
+        "projects",
+        "refused"
+      ],
+      "/data/projects[]": [
+        "project",
+        "rows"
+      ],
+      "/data/projects[]/project": [
+        "name",
+        "org"
+      ],
+      "/data/projects[]/rows[]": [
+        "active_form",
+        "archived_at",
+        "cadence",
+        "created_at",
+        "detail",
+        "estimate",
+        "evidence",
+        "id",
+        "kind",
+        "links",
+        "owner",
+        "parent",
+        "project_name",
+        "rank",
+        "request",
+        "status",
+        "subject",
+        "updated_at",
+        "verify",
+        "version",
+        "waiting_on"
+      ],
+      "/data/projects[]/rows[]/archived_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ],
+      "/data/projects[]/rows[]/created_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ],
+      "/data/projects[]/rows[]/links[]": [
+        "added_at",
+        "kind",
+        "label",
+        "last_check",
+        "state",
+        "target"
+      ],
+      "/data/projects[]/rows[]/links[]/added_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ],
+      "/data/projects[]/rows[]/owner": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/data/projects[]/rows[]/updated_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ]
+    },
     "SnapshotBoard": {
       "": [
         "data",

@@ -35,9 +35,10 @@ pub enum Subject {
     ///
     /// A subject of its own because the board page draws it only when its
     /// toggle is open, and the archive grows without bound: a page that
-    /// never opens the toggle should not carry the history. It hears the
-    /// same task writes the board does, since a write can archive or
-    /// restore a row.
+    /// never opens the toggle should not carry the history. The page reads
+    /// it once per opening and releases it with the answer; a task write
+    /// that archives or restores a row is heard by the board's own store,
+    /// and the next opening reads the shelf again.
     Archived,
     Session(SessionSlot),
     /// The token/cost pool, scanned on the ask.
@@ -130,12 +131,18 @@ impl Subject {
                     || matches!(update, SessionUpdate::TasksChanged { .. })
                     || seat_liveness(update)
             }
-            // The closed view moves when the board's rows do: a task write
-            // is what archives, restores and ends a row. A client holding
-            // the toggle open reads the closed subject once more on the
-            // frame - the frame carries the live set, not the archive, so
-            // this is the one re-read its subject needs.
-            Self::Archived => matches!(update, SessionUpdate::TasksChanged { .. }),
+            // **Two subjects hear nothing.**
+            //
+            // The closed view, because nothing stays subscribed: a client
+            // asks once per opening of its toggle and releases the subject
+            // with the answer; a task write that archives or restores a row
+            // reaches that page through the board's own store, and the next
+            // opening reads the shelf again.
+            //
+            // The token pool, because nothing carries it: its snapshot is a
+            // scan, and a transcript's tokens moving is not an update any
+            // variant announces.
+            Self::Archived | Self::Usage => false,
             // **A take is not the seat's.** The `Dictate*` family names the
             // seat it records for, so the slot test alone would keep carrying
             // it here; it belongs to the connection's dictate subscription,
@@ -145,10 +152,6 @@ impl Subject {
             // connection's own routing: another client's take is not this
             // subscription's.
             Self::Dictate => is_dictate(update),
-            // Nothing carries the pool: its snapshot is a scan, and a
-            // transcript's tokens moving is not an update any variant
-            // announces.
-            Self::Usage => false,
             // The check's own landing, and the load's signal: a page open
             // during a first 3 GB download hears models finished loading
             // through `DictateAvailability` and is patched, so its state
