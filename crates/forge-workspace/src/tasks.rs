@@ -767,6 +767,20 @@ impl Workspace {
             if prior == TaskStatus::Waiting && next.status != TaskStatus::Waiting {
                 next.waiting_on = None;
             }
+            // A chase park owes its wait detail to an overrun. A restated
+            // estimate that covers the worked time retires that overrun, so
+            // the drawn detail must stop claiming it.
+            let estimate_moved = next.estimate.as_ref().map(|estimate| estimate.secs)
+                != tasks[index].estimate.as_ref().map(|estimate| estimate.secs);
+            let overrun_retired = estimate_moved
+                && next.waiting_on.as_ref().is_some_and(|wait| wait.replan)
+                && next.estimate.as_ref().is_some_and(|estimate| {
+                    self.worked_secs_of(project_name, &next, at)
+                        .is_some_and(|worked| worked <= estimate.secs)
+                });
+            if overrun_retired && let Some(wait) = next.waiting_on.as_mut() {
+                wait.detail = None;
+            }
 
             if gate
                 && next.status == TaskStatus::Completed
@@ -2252,6 +2266,16 @@ impl Workspace {
                 );
             }
         }
+    }
+
+    /// A row's worked time from the project's history, as the board reads
+    /// it. `None` when the store cannot be read, so a caller leaves the row
+    /// as it stands rather than acting on a number it does not have.
+    fn worked_secs_of(&self, project_name: &str, task: &Task, now: SystemTime) -> Option<u64> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        let history = crate::store::task_history::list_for_project(db, project_name).ok()?;
+        Some(crate::board::worked_secs_of(task, &history, now))
     }
 
     /// Append one status transition to the durable history.

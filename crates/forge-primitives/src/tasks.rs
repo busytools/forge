@@ -100,9 +100,10 @@ pub struct Waiting {
     #[serde(default)]
     pub parked: bool,
     /// The chase wrote this wait: a re-plan ask parked a row over its
-    /// estimate. The escalation follows its own ask here; a wait raised by
-    /// anyone else - the user's, a dependency, an owner's park - is never
-    /// escalated.
+    /// estimate. The escalation follows its own ask here; an owner's park
+    /// is `parked` on this same wait, so the marker survives it, and a wait
+    /// raised by anyone else - the user's, a dependency, an owner's fresh
+    /// wait - is never escalated.
     #[serde(default)]
     pub replan: bool,
     /// When the wait began, stamped as it is raised. `None` on a row stored
@@ -627,7 +628,8 @@ pub struct TaskTransition {
 pub enum ChaseRung {
     /// An in-progress finite row's worked time passed its estimate: the one
     /// re-plan ask to its owner (which parks the row), then nothing until
-    /// an estimate is restated.
+    /// the row is back in progress with an estimate restated to a different
+    /// duration.
     EstimateNudge,
     /// A row still past its estimate 30 minutes after its re-plan ask,
     /// while it is in progress or waiting in the chase's own overrun park:

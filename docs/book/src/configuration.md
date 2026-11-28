@@ -857,9 +857,10 @@ always. What it asks, and on what clock, is a constant in the code:
   from its age again.
 - **An in-progress row past its estimate asks its owner once** and is
   parked waiting on the owner; a restated estimate (a different duration)
-  arms the nudge again; a wait that resolved asks its waiter once to
-  resume it. A waiting or pending row is not being worked, so its worked
-  time past an estimate draws no overrun nudge.
+  arms the nudge again once the row is back in progress; a wait that
+  resolved asks its waiter once to resume it. A waiting or pending row is
+  not being worked, so its worked time past an estimate draws no overrun
+  nudge.
 - **A row still past its estimate 30 minutes after its re-plan ask tells
   the lead once per estimate**, whether it is still in progress or still
   waiting in the park the chase wrote. A row waiting on the user, on a
