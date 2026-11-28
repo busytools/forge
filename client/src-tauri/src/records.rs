@@ -76,8 +76,8 @@ pub enum Held {
 /// stream), so a record here is not a notice - `apply` keeps the copy current
 /// for the moment a parked page comes back. The fold re-reads nothing and
 /// replays no pile: the page's stores and folds do that off the frames, and
-/// the one re-read this side asks for is a parked page's roster
-/// (`ask_arrived`).
+/// the roster moves the ask rule reads arrive as the home's own patches,
+/// which `patch` folds like any other subject's.
 ///
 /// **Every other subject is asked for again instead.** The reconcile
 /// subscribes the board, models or extensions afresh and never reads a copy,
@@ -123,17 +123,24 @@ impl Records {
     ///
     /// **A patch carries the fields that moved and nothing else** (an absent
     /// field means unchanged), so it merges at the record's top level - the
-    /// same rule the page applies to the same frames. The fold exists because
-    /// the record this side hands a parked page is the copy it folded: an
-    /// unfolded patch would be reverted by the catch-up snapshot built before
-    /// it, and no later patch re-sends those fields.
+    /// same rule the page applies to the same frames, except for the home's
+    /// three lists, which cross as id-addressed entries and are folded by
+    /// [`home_patch`]. The fold exists because the record this side hands a
+    /// parked page is the copy it folded: an unfolded patch would be reverted
+    /// by the catch-up snapshot built before it, and no later patch re-sends
+    /// those fields.
     ///
-    /// Answers whether a record this side holds took it.
+    /// Answers whether a record this side holds took it. **A home patch this
+    /// build cannot place answers false**, and the caller asks for one whole
+    /// read rather than keeping a roster it could not fold.
     pub fn patch(&mut self, subject: &Value, data: &Value) -> bool {
         let key = subject_key(subject);
         let Some(Held::Ready(record)) = self.subjects.get_mut(&key) else {
             return false;
         };
+        if key == "home" {
+            return home_patch(record, data);
+        }
         let (Some(record), Some(patch)) = (record.as_object_mut(), data.as_object()) else {
             return false;
         };
@@ -168,9 +175,9 @@ impl Records {
             return Vec::new();
         };
         // A seat is addressed by its slot; a keyless update belongs to no
-        // record this fold keeps (the page's own home fold reads the frames
-        // directly), and a seat this client never subscribed to is not this
-        // client's to keep.
+        // record this fold keeps (the home moves by its own patches, and the
+        // page's fold reads the frames directly), and a seat this client
+        // never subscribed to is not this client's to keep.
         let Some(key) = seat_key_of(update) else {
             return Vec::new();
         };
@@ -246,6 +253,78 @@ pub fn subject_key(subject: &Value) -> String {
 /// A slot as the key this half and the page hold its record under.
 pub(crate) fn slot_key(slot: &SessionSlot) -> String {
     format!("session:{}\u{0}{}\u{0}{}", slot.org(), slot.project(), slot.label())
+}
+
+/// The home's own patch: its three lists fold by id, every other field is
+/// replaced whole. `false` when the patch is not the shape this build folds,
+/// and nothing is written in that case.
+///
+/// **The ids are the ones the records themselves carry** - a project by its
+/// org and name, a seat by its slot, a fleet row by its project - exactly as
+/// the page's own fold reads them (`client/src/wire/patch.ts`). The roster
+/// here is the copy the ask and wait rules read, so it must fold the same
+/// frames the page folds and not a field behind.
+fn home_patch(record: &mut Value, patch: &Value) -> bool {
+    let (Some(record), Some(patch)) = (record.as_object_mut(), patch.as_object()) else {
+        return false;
+    };
+    let mut staged: Vec<(String, Value)> = Vec::with_capacity(patch.len());
+    for (field, value) in patch {
+        let folded = match field.as_str() {
+            "projects" => fold_entries(record.get("projects"), value, |row| {
+                // **The identity is org and name**, the pair the server keys
+                // a project entry by: the view also carries sessions and
+                // paths, and any of those moving must not read as a
+                // different project.
+                let project = row.get("project")?;
+                Some(json!({ "org": project.get("org")?, "name": project.get("name")? }))
+            }),
+            "agents" => fold_entries(record.get("agents"), value, |row| row.get("slot").cloned()),
+            "fleet" => fold_entries(record.get("fleet"), value, |row| row.get("project").cloned()),
+            _ => Some(value.clone()),
+        };
+        let Some(folded) = folded else { return false };
+        staged.push((field.clone(), folded));
+    }
+    for (field, value) in staged {
+        record.insert(field, value);
+    }
+    true
+}
+
+/// One list field's delta: a `set` replaces the entry holding that id where
+/// it stands (or appends one the list does not hold), a `removed` takes its
+/// entry out. `None` when either side is not the shape the server writes.
+fn fold_entries(
+    list: Option<&Value>,
+    entries: &Value,
+    id_of: impl Fn(&Value) -> Option<Value>,
+) -> Option<Value> {
+    let mut next = list?.as_array()?.clone();
+    for entry in entries.as_array()? {
+        let op = entry.get("op").and_then(Value::as_str)?;
+        let id = entry.get("id")?;
+        let at = next.iter().position(|held| id_of(held).as_ref() == Some(id));
+        match op {
+            "set" => {
+                let fresh = entry.get("record")?;
+                if !fresh.is_object() {
+                    return None;
+                }
+                match at {
+                    Some(at) => next[at] = fresh.clone(),
+                    None => next.push(fresh.clone()),
+                }
+            }
+            "removed" => {
+                if let Some(at) = at {
+                    next.remove(at);
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(Value::Array(next))
 }
 
 /// Fold one seat update into the record. `true` when the record really moved -
@@ -960,6 +1039,88 @@ mod tests {
             held(&records)["header"]["context"]["percent"],
             json!(0.42),
             "the update's name is read into the record's"
+        );
+    }
+
+    /// **The home's lists cross as id-addressed entries, and the held
+    /// roster folds them where they stand.** A top-level merge would replace
+    /// the roster with the patch's own entries, so the copy the ask rule
+    /// reads would hold `{op, id, record}` objects where rows belong. An
+    /// untouched list is left alone, a whole field is replaced, and a patch
+    /// this build cannot place is refused rather than half-applied.
+    #[test]
+    fn a_home_patch_folds_its_lists_by_id() {
+        let slot = |label: &str| json!({ "org": "Busytools", "project": "forge", "label": label });
+        let mut records = Records::new();
+        records.snapshot(
+            &json!("home"),
+            json!({
+                "boot_id": "run-1",
+                "projects": [{ "project": { "org": "Busytools", "name": "forge" } }],
+                "agents": [
+                    { "slot": slot("w1"), "pending": null, "pending_seq": 0 },
+                    { "slot": slot("w2"), "pending": null, "pending_seq": 0 },
+                ],
+                "fleet": [{ "project": "forge", "attention": [] }],
+            }),
+        );
+        let applied = records.patch(
+            &json!("home"),
+            &json!({
+                "agents": [
+                    {
+                        "op": "set",
+                        "id": slot("w1"),
+                        "record": { "slot": slot("w1"), "pending": "question", "pending_seq": 1 },
+                    },
+                    { "op": "removed", "id": slot("w2") },
+                    {
+                        "op": "set",
+                        "id": slot("w3"),
+                        "record": { "slot": slot("w3"), "pending": "permission", "pending_seq": 1 },
+                    },
+                ],
+                "fleet": [
+                    {
+                        "op": "set",
+                        "id": "forge",
+                        "record": { "project": "forge", "attention": [{ "task": "t1" }] },
+                    },
+                ],
+                "boot_id": "run-2",
+            }),
+        );
+        assert!(applied, "a patch of the shapes the server writes is applied");
+        let home = |records: &Records| records.read("home").expect("held").expect("ready").clone();
+        let seen = home(&records);
+        let agents = seen["agents"].as_array().expect("agents");
+        assert_eq!(agents.len(), 2, "one replaced, one removed, one appended");
+        assert_eq!(agents[0]["slot"]["label"], json!("w1"), "the set entry keeps its place");
+        assert_eq!(agents[0]["pending"], json!("question"), "and takes the record's fields");
+        assert_eq!(
+            agents[1]["slot"]["label"],
+            json!("w3"),
+            "an id the roster did not hold appends"
+        );
+        assert_eq!(
+            seen["fleet"][0]["attention"][0]["task"],
+            json!("t1"),
+            "the fleet row folds in place"
+        );
+        assert_eq!(seen["boot_id"], json!("run-2"), "and a whole field is replaced");
+        assert!(seen["projects"][0]["project"].is_object(), "an untouched list is left alone");
+
+        assert!(
+            !records.patch(
+                &json!("home"),
+                &json!({ "agents": [{ "op": "weird", "id": slot("w1") }] }),
+            ),
+            "a patch this build cannot place is refused",
+        );
+        assert_eq!(
+            home(&records)["agents"].as_array().expect("agents").len(),
+            2,
+            "and the refusal left the roster as it stood",
         );
     }
 
