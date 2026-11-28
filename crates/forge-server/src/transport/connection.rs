@@ -2244,8 +2244,9 @@ where
     // from exactly what this answer handed the client. A re-subscribe of the
     // same subject crosses as the next number, and the client adopts the
     // answer's version with the record it replaces. The base is the
-    // projection a patch can carry, and a mark that raced this read is
-    // re-marked here now that there is one to diff against.
+    // projection a patch can carry. A mark taken while this read was in
+    // flight is still in `dirty`, and `emit_patches` sends it against this
+    // seed once `finish_read` has cleared the subject from `reading`.
     let version = watching.seed(&subject, &data);
     // **The label is taken before the subject moves into the frame**: the log
     // line names the subject, and the frame consumes it.

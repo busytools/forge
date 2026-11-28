@@ -8524,10 +8524,11 @@ async fn an_update_during_a_review_read_crosses_after_its_answer() {
         message: "a worker answered".to_owned(),
     });
 
-    // **Nothing is patched while the read is in flight.** Two coalesces pass
-    // with the read still held; an unfixed ordering sends its patch here,
+    // **Nothing is patched while the read is in flight.** The window is ten
+    // coalesces long and the gate is still held, so even a loaded box has run
+    // the deferral many times over; an unfixed ordering sends its patch here,
     // against the base the answer is about to replace.
-    while let Some(frame) = next_server_within(&mut conn, 700).await {
+    while let Some(frame) = next_server_within(&mut conn, 1_500).await {
         assert!(
             !matches!(frame, ServerMessage::Patch { subject: Subject::Session(_), .. }),
             "a patch overtook the read's own answer: {frame:?}",
@@ -8549,6 +8550,13 @@ async fn an_update_during_a_review_read_crosses_after_its_answer() {
             {
                 record = Some(data);
             }
+            // **A patch may not overtake the answer either**, including one
+            // sent between the release and the answer's write: that is the
+            // same inversion as the held window above, one scheduling step
+            // later.
+            Some(ServerMessage::Patch { subject: Subject::Session(_), .. }) => {
+                panic!("a patch overtook the read's own answer after the release");
+            }
             Some(_) => {}
             None => break,
         }
@@ -8569,6 +8577,140 @@ async fn an_update_during_a_review_read_crosses_after_its_answer() {
     assert!(
         threads.iter().any(|held| held["id"] == "t-during"),
         "the client's final record lost the review the notice announced: {record}",
+    );
+}
+
+/// **The first read is deferred the same way as a re-subscribe.** A subject
+/// joins `subjects` only when its answer is written, so a notice landing
+/// during its FIRST off-loop read is seen only because `mark_patches` walks
+/// `reading` too; without that, the mark is dropped and no patch can ever
+/// carry what the answer's encode predates.
+///
+/// The record's review rows are read after the gate, so this answer carries
+/// the write it landed behind - the assertion here is that the first read's
+/// path is exercised at all and its ordering holds: no patch may overtake the
+/// answer, and the answer is current.
+#[tokio::test]
+async fn an_update_during_a_first_read_is_held_behind_its_answer() {
+    use forge_primitives::review::{
+        ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+    };
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener, updates).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    // A second connection reads the seat plainly, for the branch its reviews
+    // live under; the connection this test is about never reads it, so its
+    // first read below is genuinely the subject's first on that connection.
+    let mut peek = connect(&url).await;
+    send(
+        &mut peek,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (_, plain, _) = snapshot_answering(&mut peek).await;
+    let branch = plain["work"]["branch"].as_str().expect("the record names its branch").to_owned();
+
+    forge_workspace::work::set_pinned_gate_wait(10_000);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+
+    let mut conn = connect(&url).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+
+    let thread = ReviewThread {
+        id: "t-first".to_owned(),
+        anchor: ReviewAnchor {
+            path: "feat.txt".to_owned(),
+            side: ReviewSide::New,
+            line: 1,
+            content_hash: 1,
+            context: vec!["feat".to_owned()],
+            base_ref: "main".to_owned(),
+        },
+        comments: vec![ReviewComment {
+            author: ReviewAuthor::Agent { label: "lead".to_owned() },
+            text: "answered".to_owned(),
+            at: "2026-11-28T00:00:00Z".to_owned(),
+            review_id: None,
+        }],
+        status: ReviewStatus::Addressed,
+        created_at: "2026-11-28T00:00:00Z".to_owned(),
+        updated_at: "2026-11-28T00:00:00Z".to_owned(),
+        commit: None,
+    };
+    assert!(
+        fleet.workspace().upsert_review_thread("proj", &branch, thread),
+        "the review write landed",
+    );
+    fleet.emit(SessionUpdate::ReviewActivityNotice {
+        key: lead_seat(),
+        branch: branch.clone(),
+        waiting: 1,
+        message: "a worker answered".to_owned(),
+    });
+
+    while let Some(frame) = next_server_within(&mut conn, 1_500).await {
+        assert!(
+            !matches!(frame, ServerMessage::Patch { subject: Subject::Session(_), .. }),
+            "a patch overtook the first read's own answer: {frame:?}",
+        );
+    }
+
+    drop(in_flight);
+    forge_workspace::work::set_pinned_gate_wait(0);
+
+    let mut record: Option<serde_json::Value> = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && record.is_none() {
+        match next_server_within(&mut conn, 5_000).await {
+            Some(ServerMessage::Snapshot { subject, data, .. })
+                if subject == Subject::Session(lead_seat()) =>
+            {
+                record = Some(data);
+            }
+            Some(ServerMessage::Patch { subject: Subject::Session(_), .. }) => {
+                panic!("a patch overtook the first read's own answer after the release");
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    let record = record.expect("the first read's answer arrived");
+    let threads = record["reviews"]["threads"]["value"]
+        .as_array()
+        .expect("the record carries its review threads");
+    assert!(
+        threads.iter().any(|held| held["id"] == "t-first"),
+        "the first read's answer lost the review the notice announced: {record}",
     );
 }
 
