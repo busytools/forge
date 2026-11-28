@@ -31,8 +31,12 @@ export interface NeedCard {
   options: string[];
   /** A teaching's class: the recurring trouble the lesson settles. */
   class: string | null;
-  /** The bounded excerpt behind the ask, when the row carries one. */
+  /** The card's evidence line: the lead's own verification when the row
+   *  carries one, else the bounded excerpt. */
   evidence: string | null;
+  /** The excerpt the lead's quote folded away, drawn once the card is
+   *  expanded; `null` when the line already IS the excerpt. */
+  excerpt: string | null;
   /** What the gate said about that evidence; `null` for a row with none. */
   evidenceState: 'verified' | 'unchecked' | 'failed' | null;
   /** The artifact the ask points at, when it carries a followable one. */
@@ -246,6 +250,12 @@ function needCardOf(row: BoardRow, rows: BoardRow[], nowSecs: number): NeedCard 
         ? 'This row has no verified evidence behind its completion; move it with an evidence claim first.'
         : null;
   const kind: NeedKind = verification ? 'look' : (request?.kind ?? 'decision');
+  // The lead's own verification is the line when the row carries one: it
+  // is what stands for the artifact the gate could not check. Blank words
+  // are not a verification the server would accept, so they read absent.
+  // The excerpt then folds behind the same `more`, never dropped.
+  const leadVerified = task.evidence?.lead_verified?.trim() ?? '';
+  const vouched = leadVerified === '' ? null : leadVerified;
   return {
     id: task.id,
     kind,
@@ -253,13 +263,8 @@ function needCardOf(row: BoardRow, rows: BoardRow[], nowSecs: number): NeedCard 
     question,
     options: kind === 'decision' ? (request?.options ?? []) : [],
     class: request?.class ?? null,
-    // The lead's own verification is the line when the row carries one: it
-    // is what stands for the artifact the gate could not check. Absent
-    // draws the excerpt, exactly as before.
-    evidence:
-      task.evidence?.lead_verified != null
-        ? `lead-verified: ${task.evidence.lead_verified}`
-        : (task.evidence?.excerpt ?? null),
+    evidence: vouched === null ? (task.evidence?.excerpt ?? null) : `lead-verified: ${vouched}`,
+    excerpt: vouched === null ? null : (task.evidence?.excerpt ?? null),
     evidenceState,
     artifact,
     owner: task.owner === null ? null : task.owner.label,

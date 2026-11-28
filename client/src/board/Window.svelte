@@ -258,13 +258,18 @@
               >
             {/if}
             {#if chip !== null || card.evidence !== null}
+              {@const expandable =
+                card.excerpt !== null ||
+                (card.evidence !== null && card.evidence.length > SUMMARY_CHARS)}
               <div class="w-ev" class:open={expanded}>
                 {#if chip !== null}<span class="b-chip {chip.tone}">{chip.label}</span>{/if}
                 {#if card.evidence !== null}
-                  <span class="w-ev-text"
+                  <!-- The full line rides the title whatever the card's
+                       width does to the drawn one. -->
+                  <span class="w-ev-text" title={card.evidence}
                     >{expanded ? card.evidence : summaryOf(card.evidence)}</span
                   >
-                  {#if card.evidence.length > SUMMARY_CHARS}
+                  {#if expandable}
                     <button
                       type="button"
                       class="w-more"
@@ -273,6 +278,11 @@
                       >{expanded ? 'less' : 'more'}</button
                     >
                   {/if}
+                {/if}
+                <!-- The excerpt a lead's quote folded away keeps its own
+                     line under it, once the reader asks for the rest. -->
+                {#if expanded && card.excerpt !== null}
+                  <span class="w-ev-text w-ev-excerpt">{card.excerpt}</span>
                 {/if}
               </div>
             {/if}

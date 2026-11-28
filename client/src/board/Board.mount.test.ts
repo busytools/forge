@@ -1816,26 +1816,40 @@ describe("the window's controls", () => {
     expect(line?.querySelector('.w-more'), 'and offers no expand for nothing').toBeNull();
   });
 
-  it("draws the lead's verification in place of the excerpt", () => {
+  it("draws the lead's verification as the line and folds the excerpt behind more", () => {
     windowOver([
       lookRow({
         commit: null,
         path: null,
-        lead_verified: 'read the sibling repo: the five port rows pass',
+        lead_verified: 'read the sibling repo at the new head; the five port rows pass on it',
         excerpt: 'the excerpt is not the line',
         verified_at: since,
         problem: null,
       }),
     ]);
     const line = document.querySelector('.w-need .w-ev');
+    const text = line?.querySelector('.w-ev-text');
     expect(
-      line?.textContent,
+      text?.textContent,
       "the lead's own words are the line a sibling-repo artifact draws",
-    ).toContain('lead-verified: read the sibling repo: the five port rows pass');
+    ).toContain('lead-verified: read the sibling repo at the new head');
     expect(
-      line?.textContent,
-      'the excerpt does not stand in when the lead has vouched',
-    ).not.toContain('the excerpt is not the line');
+      text?.getAttribute('title'),
+      'the full line rides the title whatever the width does to the drawn one',
+    ).toBe('lead-verified: read the sibling repo at the new head; the five port rows pass on it');
+    expect(line?.textContent, 'the excerpt is folded behind more, not dropped').not.toContain(
+      'the excerpt is not the line',
+    );
+    const more = line?.querySelector('.w-more');
+    if (more === null || more === undefined) {
+      throw new Error('the folded excerpt offers no expander');
+    }
+    (more as HTMLElement).click();
+    flushSync();
+    const expanded = document.querySelector('.w-need .w-ev');
+    expect(expanded?.textContent, 'the excerpt still draws once expanded').toContain(
+      'the excerpt is not the line',
+    );
   });
 
   it('holds the approve door on a look with no verified evidence', () => {

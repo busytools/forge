@@ -142,7 +142,11 @@ Where a card carries evidence, it is one summary line: the gate's own word
 the bounded excerpt, which `more` expands and `less` folds back, or - when
 the project's lead vouched for an artifact the gate cannot check
 mechanically, like a sibling repository - `lead-verified:` followed by the
-lead's own words. A claim with no excerpt still states its word.
+lead's own words. The lead's words pass through the same bound and
+expansion as the excerpt, and the full line always rides the line's title.
+When a row carries both, the quote is the line and the excerpt stays behind
+the same `more` rather than being dropped. A claim with no excerpt still
+states its word.
 
 **One action bar per card, and the hierarchy is by shape.** The primary
 actions - `approve` on a look, the option pills on a decision, a

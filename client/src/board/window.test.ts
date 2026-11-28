@@ -118,6 +118,7 @@ describe('the window', () => {
     expect(card?.question).toBe('Ship it behind a flag?');
     expect(card?.options).toEqual(['flag it', 'ship it']);
     expect(card?.evidence).toBe('12 tests run: 12 passed');
+    expect(card?.excerpt, 'the line already is the excerpt').toBeNull();
     expect(card?.evidenceState).toBe('unchecked');
     expect(card?.owner).toBe('w-1');
     expect(card?.seat?.label).toBe('w-1');
@@ -150,7 +151,39 @@ describe('the window', () => {
     });
     const card = viewOf([row(ask)]).needs[0];
     expect(card?.evidence).toBe('lead-verified: read the sibling repo; it passes');
+    expect(card?.excerpt, 'the excerpt the quote folded away is still reachable').toBe(
+      'the excerpt is not the line',
+    );
     expect(card?.evidenceState).toBe('verified');
+  });
+
+  it('reads a blank lead verification as absent and draws the excerpt', () => {
+    const ask = task('t1', 'waiting', {
+      waiting_on: {
+        kind: 'user',
+        detail: null,
+        on: null,
+        verification: false,
+        since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+      },
+      request: {
+        kind: 'decision',
+        question: 'Ship it?',
+        options: ['ship it', 'wait'],
+        answer: null,
+      },
+      evidence: {
+        commit: 'abc123',
+        path: null,
+        lead_verified: '   ',
+        excerpt: '12 tests run: 12 passed',
+        verified_at: null,
+        problem: null,
+      },
+    });
+    const card = viewOf([row(ask)]).needs[0];
+    expect(card?.evidence, 'blank words are not a verification').toBe('12 tests run: 12 passed');
+    expect(card?.excerpt).toBeNull();
   });
 
   it('ranks a look ahead of a decision, then the oldest wait first', () => {
