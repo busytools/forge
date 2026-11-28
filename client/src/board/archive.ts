@@ -41,19 +41,31 @@ export function archivedFrom(data: unknown): ArchivedWire {
     refused?: unknown;
   };
   const projects = Array.isArray(held.projects) ? held.projects : [];
+  const read: ProjectArchivedWire[] = [];
+  let malformed = false;
+  for (const entry of projects) {
+    const project = (entry as { project?: { org?: unknown; name?: unknown } } | null)?.project;
+    const rows = (entry as { rows?: unknown }).rows;
+    if (typeof project?.org !== 'string' || typeof project.name !== 'string') {
+      // **A project entry this client cannot read is a failure, not a shorter
+      // shelf.** Dropping it would draw the archive as though that project had
+      // nothing closed, and the reader would believe it (rule 25).
+      malformed = true;
+      continue;
+    }
+    read.push({
+      project: { org: project.org, name: project.name },
+      rows: (Array.isArray(rows) ? rows : []).map(closedTaskFrom),
+    });
+  }
   return {
-    refused: typeof held.refused === 'string' ? held.refused : null,
-    projects: projects.flatMap((entry) => {
-      const project = (entry as { project?: { org?: unknown; name?: unknown } } | null)?.project;
-      if (typeof project?.org !== 'string' || typeof project.name !== 'string') return [];
-      const rows = (entry as { rows?: unknown }).rows;
-      return [
-        {
-          project: { org: project.org, name: project.name },
-          rows: (Array.isArray(rows) ? rows : []).map(closedTaskFrom),
-        },
-      ];
-    }),
+    refused:
+      typeof held.refused === 'string'
+        ? held.refused
+        : malformed
+          ? 'the archive carried a project this client could not read'
+          : null,
+    projects: read,
   };
 }
 

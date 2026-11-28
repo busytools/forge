@@ -9,7 +9,7 @@
 
 import { followable } from '../home/view';
 import type { BoardWire } from '../wire/board';
-import type { BoardRow, HomeWire, Task, TaskStatus } from '../wire/home';
+import type { BoardRow, Disposition, HomeWire, Task, TaskStatus } from '../wire/home';
 
 /** One card on the board, resolved for the markup. */
 export interface BoardCardView {
@@ -136,8 +136,21 @@ export function landed(rows: BoardRow[], id: string, want: PendingMove): boolean
   return at !== -1 && (lane[at + 1] ?? null) === want.before;
 }
 
-/** An exception's four disposals, enumerated as the core's are. */
-export const DISPOSITIONS = ['retry', 'rescope', 'drop', 'diagnose'] as const;
+/**
+ * An exception's four disposals, enumerated as the core's are.
+ *
+ * **The table is exhaustive on purpose**: a disposition added to the core's
+ * `Disposition` leaves a key missing here and the build fails, rather than
+ * this copy quietly offering one door fewer.
+ */
+const DISPOSITION_TABLE = {
+  retry: true,
+  rescope: true,
+  drop: true,
+  diagnose: true,
+} satisfies Record<Disposition, true>;
+
+export const DISPOSITIONS: readonly Disposition[] = Object.keys(DISPOSITION_TABLE) as Disposition[];
 
 /** One row waiting on the user, as the strip draws it. */
 export interface WaitingView {
