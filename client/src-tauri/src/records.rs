@@ -71,13 +71,15 @@ pub enum Held {
 /// Every subject the shell READS: a seat's record, and the home roster the
 /// ask rule folds. Nothing else is copied here.
 ///
-/// **The fold runs on every update; the catch-up is its only reader.** The
-/// page is told about every frame as it arrives (the bridge forwards the
-/// stream), so a record here is not a notice - `apply` keeps the copy current
-/// for the moment a parked page comes back. The fold re-reads nothing and
+/// **The fold runs on every frame; the readers are the catch-up and the ask
+/// rule.** The page is told about every frame as it arrives (the bridge
+/// forwards the stream), so a record here is not a notice. A seat's copy is
+/// read by `catch_up` when a parked page comes back. The home's copy is read
+/// by the ask and wait rules in the shell's own half, on every read of the
+/// roster and on every patch that moves it. The fold re-reads nothing and
 /// replays no pile: the page's stores and folds do that off the frames, and
-/// the roster moves the ask rule reads arrive as the home's own patches,
-/// which `patch` folds like any other subject's.
+/// the roster moves arrive as the home's own patches, which `patch` folds
+/// like any other subject's.
 ///
 /// **Every other subject is asked for again instead.** The reconcile
 /// subscribes the board, models or extensions afresh and never reads a copy,
@@ -1042,12 +1044,17 @@ mod tests {
         );
     }
 
+    /// A project row's id, as both the record and the patch entry state it.
+    fn project(org: &str, name: &str) -> Value {
+        json!({ "project": { "org": org, "name": name } })
+    }
+
     /// **The home's lists cross as id-addressed entries, and the held
     /// roster folds them where they stand.** A top-level merge would replace
     /// the roster with the patch's own entries, so the copy the ask rule
-    /// reads would hold `{op, id, record}` objects where rows belong. An
-    /// untouched list is left alone, a whole field is replaced, and a patch
-    /// this build cannot place is refused rather than half-applied.
+    /// reads would hold `{op, id, record}` objects where rows belong. Every
+    /// list keeps a survivor, so a fold that removes and re-appends is told
+    /// apart from one that replaces in place.
     #[test]
     fn a_home_patch_folds_its_lists_by_id() {
         let slot = |label: &str| json!({ "org": "Busytools", "project": "forge", "label": label });
@@ -1056,17 +1063,37 @@ mod tests {
             &json!("home"),
             json!({
                 "boot_id": "run-1",
-                "projects": [{ "project": { "org": "Busytools", "name": "forge" } }],
+                "projects": [
+                    project("Busytools", "forge"),
+                    project("Busytools", "other"),
+                ],
                 "agents": [
                     { "slot": slot("w1"), "pending": null, "pending_seq": 0 },
                     { "slot": slot("w2"), "pending": null, "pending_seq": 0 },
                 ],
-                "fleet": [{ "project": "forge", "attention": [] }],
+                "fleet": [
+                    { "project": "forge", "attention": [] },
+                    { "project": "other", "attention": [] },
+                ],
+                "unseen": [],
             }),
         );
         let applied = records.patch(
             &json!("home"),
             &json!({
+                "projects": [
+                    {
+                        "op": "set",
+                        "id": { "org": "Busytools", "name": "forge" },
+                        "record": { "project": { "org": "Busytools", "name": "forge" }, "chip": "busy" },
+                    },
+                    {
+                        "op": "set",
+                        "id": { "org": "Busytools", "name": "third" },
+                        "record": project("Busytools", "third"),
+                    },
+                    { "op": "removed", "id": { "org": "Busytools", "name": "other" } },
+                ],
                 "agents": [
                     {
                         "op": "set",
@@ -1086,6 +1113,7 @@ mod tests {
                         "id": "forge",
                         "record": { "project": "forge", "attention": [{ "task": "t1" }] },
                     },
+                    { "op": "removed", "id": "other" },
                 ],
                 "boot_id": "run-2",
             }),
@@ -1093,6 +1121,21 @@ mod tests {
         assert!(applied, "a patch of the shapes the server writes is applied");
         let home = |records: &Records| records.read("home").expect("held").expect("ready").clone();
         let seen = home(&records);
+
+        let projects = seen["projects"].as_array().expect("projects");
+        assert_eq!(projects.len(), 2, "one replaced, one removed, one appended");
+        assert_eq!(
+            projects[0]["project"]["name"],
+            json!("forge"),
+            "the set project keeps its place"
+        );
+        assert_eq!(projects[0]["chip"], json!("busy"), "and takes the record's fields");
+        assert_eq!(
+            projects[1]["project"]["name"],
+            json!("third"),
+            "an identity the roster did not hold appends"
+        );
+
         let agents = seen["agents"].as_array().expect("agents");
         assert_eq!(agents.len(), 2, "one replaced, one removed, one appended");
         assert_eq!(agents[0]["slot"]["label"], json!("w1"), "the set entry keeps its place");
@@ -1102,26 +1145,51 @@ mod tests {
             json!("w3"),
             "an id the roster did not hold appends"
         );
-        assert_eq!(
-            seen["fleet"][0]["attention"][0]["task"],
-            json!("t1"),
-            "the fleet row folds in place"
-        );
-        assert_eq!(seen["boot_id"], json!("run-2"), "and a whole field is replaced");
-        assert!(seen["projects"][0]["project"].is_object(), "an untouched list is left alone");
 
+        let fleet = seen["fleet"].as_array().expect("fleet");
+        assert_eq!(fleet.len(), 1, "the removed project's row is gone");
+        assert_eq!(fleet[0]["project"], json!("forge"), "and the set one keeps its place");
+        assert_eq!(fleet[0]["attention"][0]["task"], json!("t1"), "with the record's fields");
+
+        assert_eq!(seen["boot_id"], json!("run-2"), "a whole field is replaced");
+        assert_eq!(seen["unseen"], json!([]), "and one the patch did not name is left alone");
+    }
+
+    /// **A patch is folded whole or not at all.** A valid entry ahead of an
+    /// unreadable one must not leave the list it touched half-applied: the
+    /// caller answers a refusal with one whole read, and a half-fold would
+    /// stand beside that read until it landed.
+    #[test]
+    fn a_home_patch_that_cannot_be_folded_leaves_every_list_as_it_stood() {
+        let slot = |label: &str| json!({ "org": "Busytools", "project": "forge", "label": label });
+        let mut records = Records::new();
+        records.snapshot(
+            &json!("home"),
+            json!({
+                "boot_id": "run-1",
+                "agents": [{ "slot": slot("w1"), "pending": null, "pending_seq": 0 }],
+                "fleet": [{ "project": "forge", "attention": [] }],
+                "projects": [project("Busytools", "forge")],
+            }),
+        );
         assert!(
             !records.patch(
                 &json!("home"),
-                &json!({ "agents": [{ "op": "weird", "id": slot("w1") }] }),
+                &json!({
+                    "agents": [{
+                        "op": "set",
+                        "id": slot("w1"),
+                        "record": { "slot": slot("w1"), "pending": "question", "pending_seq": 1 },
+                    }],
+                    "fleet": [{ "op": "weird", "id": "forge" }],
+                }),
             ),
-            "a patch this build cannot place is refused",
+            "the unreadable field refuses the whole patch",
         );
-        assert_eq!(
-            home(&records)["agents"].as_array().expect("agents").len(),
-            2,
-            "and the refusal left the roster as it stood",
-        );
+        let seen = records.read("home").expect("held").expect("ready");
+        assert_eq!(seen["agents"][0]["pending"], Value::Null, "the valid entry was not applied");
+        assert_eq!(seen["agents"][0]["pending_seq"], json!(0));
+        assert_eq!(seen["fleet"][0]["attention"], json!([]), "and the invalid list is untouched");
     }
 
     /// **The machine turn the core announces reaches the mirror.** A window

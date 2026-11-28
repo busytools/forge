@@ -1736,13 +1736,20 @@ impl Bridge {
                     self.raise(notices);
                     let waits = self.waits_moved();
                     self.raise_waits(waits);
-                } else if key == "home" && self.lock().held.contains_key("home") {
+                } else if key == "home" {
                     // **A patch this build cannot place is a gap it must not
                     // keep.** The page's own fold answers the same shape with
                     // one whole read (`wire/patch.ts`), and the held roster is
                     // the copy a parked page's raise reads, so it is asked for
-                    // again here too.
-                    self.refresh(&json!("home"), None);
+                    // again here too. **Once per gap**: the mark comes off with
+                    // the read's answer, so a burst of unreadable patches buys
+                    // one whole encode rather than one each.
+                    let mut state = self.lock();
+                    if state.held.contains_key("home") && state.refreshing.insert("home".to_owned())
+                    {
+                        drop(state);
+                        self.refresh(&json!("home"), None);
+                    }
                 }
                 self.forward(message, Some((bytes, parse_ms)));
             }
@@ -3394,7 +3401,7 @@ mod tests {
     /// raises.
     #[tokio::test]
     async fn an_ask_frame_issues_no_home_read_and_its_patch_raises_it() {
-        let (bridge, _rx, recorded) = bridge_recording();
+        let (bridge, mut rx, recorded) = bridge_recording();
         let mut server = stub().await;
         bridge.connect(server.url.clone());
         connected(&bridge).await;
@@ -3446,11 +3453,23 @@ mod tests {
             vec![(SessionSlot::lead("Busytools", "forge"), crate::asks::AskKind::Permission)],
             "the patch the shell forwarded moved the held roster, and the ask is raised",
         );
+        // Rule 25: the page still sees the frame itself, and the branch that
+        // raised sits between the fold and the forward.
+        let ClientEvent::Inbound(seen) = event(&mut rx, is_inbound_kind("patch")).await else {
+            unreachable!("filtered to a patch");
+        };
+        assert_eq!(seen["subject"], json!("home"), "the page draws the home patch as itself");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the folded patch issues no whole roster read",
+        );
     }
 
     /// **A home patch this build cannot place is answered with one whole
     /// read**, the way the page's own fold answers the same shape: the held
     /// roster must not stand a field behind everything a newer server writes.
+    /// **One read per gap**: a second unreadable patch behind the first waits
+    /// for its answer rather than buying a whole encode each.
     #[tokio::test]
     async fn an_unreadable_home_patch_asks_for_one_whole_read() {
         let mut server = stub().await;
@@ -3461,10 +3480,34 @@ mod tests {
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
 
-        sent(&bridge, home_patch(&json!({ "agents": [{ "op": "weird", "id": slot() }] })));
+        let unreadable = home_patch(&json!({ "agents": [{ "op": "weird", "id": slot() }] }));
+        sent(&bridge, unreadable.clone());
+        sent(&bridge, unreadable);
         let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], json!("home"), "the patch that could not be folded is re-read");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the second unreadable patch waited for the read it already had",
+        );
+    }
+
+    /// **A screen holding no home reads nothing.** The connect screen has no
+    /// roster behind it, so an unplaceable home patch there must put no read
+    /// on the wire: the shell would otherwise subscribe a subject the view
+    /// never asked for.
+    #[tokio::test]
+    async fn an_unreadable_home_patch_on_a_screen_holding_no_home_reads_nothing() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+
+        sent(&bridge, home_patch(&json!({ "agents": [{ "op": "weird", "id": slot() }] })));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "a screen holding no home asks for no read",
+        );
     }
 
     /// **A task change is the wait's door, and its patch is the door.**
@@ -3512,6 +3555,10 @@ mod tests {
                 more: 0,
             }],
             "the fleet row the patch carried raised its decision wait",
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the folded patch issues no whole roster read",
         );
     }
 
